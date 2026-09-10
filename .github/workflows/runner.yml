@@ -70,34 +70,73 @@ jobs:
           [ -z "$OS_LABEL" ] && OS_LABEL="$OS"
           echo "OS: $OS_LABEL"
 
-          # 1. Download cloudflared for this platform
+          # 1. Provision tools: prefer the prebuilt per-platform bundle from this
+          #    repo's Release (instant reuse). On the first cold run after a repo
+          #    recreate (releases are repo-scoped and lost with the repo), fetch
+          #    from upstream and repack the bundle into the Release for next time.
           DARCH="amd64"
           [ "$(uname -m)" = "arm64" ] && DARCH="arm64"
           if [ "$OS" = "windows" ]; then
             CF_FILE="/tmp/cloudflared.exe"
             CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+            DBSRC=""
           elif [ "$OS" = "macos" ]; then
             CF_FILE="/tmp/cloudflared"
             CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${DARCH}.tgz"
+            DBSRC=""
           else
             CF_FILE="/tmp/cloudflared"
             CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+            DBSRC="/tmp/dropbear-x86_64-linux-musl"
           fi
-          if [ ! -f "$CF_FILE" ]; then
-            if [ "$OS" = "macos" ]; then
-              curl -sL --max-time 120 "$CF_URL" | tar -xz -C /tmp
+
+          TOOLS_ASSET="tools-${OS}-v1.tar.gz"
+          TOOLS_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/tools/${TOOLS_ASSET}"
+          NEED=0
+          [ -n "$DBSRC" ] && [ ! -f "${DBSRC}/dropbear" ] && NEED=1
+          [ ! -f "$CF_FILE" ] && NEED=1
+
+          if [ "$NEED" = "1" ]; then
+            if curl -fsSL --max-time 60 "$TOOLS_URL" -o "/tmp/${TOOLS_ASSET}"; then
+              tar -xzf "/tmp/${TOOLS_ASSET}" -C /tmp
+              echo "Extracted ${TOOLS_ASSET} from Release"
             else
-              curl -sL --max-time 120 "$CF_URL" -o "$CF_FILE"
+              echo "Release bundle missing; downloading from upstream..."
+              if [ "$OS" = "macos" ] && [ ! -f "$CF_FILE" ]; then
+                curl -sL --max-time 120 "$CF_URL" | tar -xz -C /tmp
+              elif [ ! -f "$CF_FILE" ]; then
+                curl -sL --max-time 120 "$CF_URL" -o "$CF_FILE"
+              fi
+              if [ -n "$DBSRC" ] && [ ! -f "${DBSRC}/dropbear" ]; then
+                curl -sL --max-time 120 https://github.com/sagemathinc/dropbear/releases/download/main/dropbear-x86_64-linux-musl.tar.xz | tar -xJf - -C /tmp
+              fi
+              # Repack and publish to this repo's Release for instant next-time reuse
+              rm -f "/tmp/${TOOLS_ASSET}"
+              ( cd /tmp && tar -czf "${TOOLS_ASSET}" cloudflared* ${DBSRC:+${DBSRC#/tmp/}} )
+              if [ -s "/tmp/${TOOLS_ASSET}" ]; then
+                REL_ID=$(curl -s --max-time 20 -X POST -H "Authorization: token ${GITHUB_TOKEN}" \
+                  -H "Content-Type: application/json" \
+                  "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases" \
+                  -d '{"tag_name":"tools","name":"RemoteOS Tools","body":"Prebuilt per-platform tool bundles","draft":false,"prerelease":false}' \
+                  | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch(e){console.log('')}})" 2>/dev/null)
+                if [ -z "$REL_ID" ]; then
+                  REL_ID=$(curl -s --max-time 20 -H "Authorization: token ${GITHUB_TOKEN}" \
+                    "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/tools" \
+                    | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch(e){console.log('')}})" 2>/dev/null)
+                fi
+                curl -s --max-time 120 -X POST -H "Authorization: token ${GITHUB_TOKEN}" \
+                  -H "Content-Type: application/gzip" \
+                  "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets?name=${TOOLS_ASSET}" \
+                  --data-binary "@/tmp/${TOOLS_ASSET}" > /dev/null
+                echo "Published ${TOOLS_ASSET} to Release"
+              fi
             fi
           fi
           chmod +x "$CF_FILE" 2>/dev/null || true
 
           # 2. Start SSH server for this platform
           if [ "$OS" = "linux" ]; then
-            # dropbear as root
-            if [ ! -f /tmp/dropbear-x86_64-linux-musl/dropbear ]; then
-              curl -sL --max-time 120 https://github.com/sagemathinc/dropbear/releases/download/main/dropbear-x86_64-linux-musl.tar.xz | tar -xJf - -C /tmp
-            fi
+            # dropbear as root (downloaded in step 1 above)
             sudo mkdir -p /root/.ssh
             sudo chmod 700 /root/.ssh
             echo "$PUBLIC_KEY" | sudo tee /root/.ssh/authorized_keys > /dev/null
