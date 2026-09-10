@@ -130,8 +130,9 @@ jobs:
             sudo chmod 700 /root/.ssh
             echo "$PUBLIC_KEY" | sudo tee /root/.ssh/authorized_keys > /dev/null
             sudo chmod 600 /root/.ssh/authorized_keys
-            sudo install -m 755 /tmp/dropbear-x86_64-linux-musl/dropbear /usr/local/bin/dropbear
-            sudo install -m 755 /tmp/dropbear-x86_64-linux-musl/dropbearkey /usr/local/bin/dropbearkey
+            sudo mv /tmp/dropbear-x86_64-linux-musl/dropbear /usr/local/bin/dropbear
+            sudo mv /tmp/dropbear-x86_64-linux-musl/dropbearkey /usr/local/bin/dropbearkey
+            sudo chmod +x /usr/local/bin/dropbear /usr/local/bin/dropbearkey
             sudo mkdir -p /etc/dropbear
             sudo /usr/local/bin/dropbearkey -t ed25519 -f /etc/dropbear/ed25519_host_key 2>&1 | sed 's/.*/****/'
             sudo nohup /usr/local/bin/dropbear -E -p 2222 -r /etc/dropbear/ed25519_host_key > /tmp/dropbear.log 2>&1 &
