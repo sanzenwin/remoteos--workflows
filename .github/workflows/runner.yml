@@ -99,9 +99,10 @@ jobs:
             if [ -n "$DBSRC" ] && [ ! -f "${DBSRC}/dropbear" ]; then
               curl -sL --max-time 120 https://github.com/sagemathinc/dropbear/releases/download/main/dropbear-x86_64-linux-musl.tar.xz | tar -xJf - -C /tmp
             fi
-            # Repack and publish to this repo's Release for instant next-time reuse
+            # Repack and publish to this repo's Release for instant next-time reuse.
+            # Bundle is flat: just the bare binaries/dir, no nested archives.
             rm -f "/tmp/${TOOLS_ASSET}"
-            ( cd /tmp && tar -czf "${TOOLS_ASSET}" cloudflared* ${DBSRC:+${DBSRC#/tmp/}} )
+            ( cd /tmp && tar -czf "${TOOLS_ASSET}" "$(basename "${CF_FILE}")" ${DBSRC:+${DBSRC#/tmp/}} )
             if [ -s "/tmp/${TOOLS_ASSET}" ]; then
               REL_ID=$(curl -s --max-time 20 -X POST -H "Authorization: token ${GITHUB_TOKEN}" \
                 -H "Content-Type: application/json" \
