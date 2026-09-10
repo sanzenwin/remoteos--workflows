@@ -1,4 +1,0 @@
-honest-document-campaigns-jeff.trycloudflare.com
-104.16.231.132
-root
-Ubuntu 24.04.4 LTS
