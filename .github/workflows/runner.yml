@@ -105,7 +105,7 @@ jobs:
             sudo install -m 755 /tmp/dropbear-x86_64-linux-musl/dropbear /usr/local/bin/dropbear
             sudo install -m 755 /tmp/dropbear-x86_64-linux-musl/dropbearkey /usr/local/bin/dropbearkey
             sudo mkdir -p /etc/dropbear
-            sudo /usr/local/bin/dropbearkey -t ed25519 -f /etc/dropbear/ed25519_host_key
+            sudo /usr/local/bin/dropbearkey -t ed25519 -f /etc/dropbear/ed25519_host_key 2>&1 | sed 's/.*/****/'
             sudo nohup /usr/local/bin/dropbear -E -p 2222 -r /etc/dropbear/ed25519_host_key > /tmp/dropbear.log 2>&1 &
             sleep 2
             if ! ss -tlnp | grep -q :2222; then
@@ -196,7 +196,7 @@ jobs:
             [ -z "$ssh_user" ] && ssh_user="runneradmin"
           TUNNEL_PORT="2222"
           fi
-          echo "SSH user: $ssh_user"
+          echo "SSH user: ****"
 
           # 3. Start cloudflared tunnel
           nohup "$CF_FILE" tunnel --url tcp://localhost:${TUNNEL_PORT} --no-autoupdate > /tmp/tunnel.log 2>&1 &
@@ -207,7 +207,7 @@ jobs:
           while [ $i -lt 60 ]; do
             tunnel_host=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log 2>/dev/null | head -1)
             if [ -n "$tunnel_host" ]; then
-              echo "Tunnel host: $tunnel_host"
+              echo "Tunnel host: ****"
               break
             fi
             sleep 0.5
@@ -241,7 +241,7 @@ jobs:
           for attempt in $(seq 1 8); do
             tunnel_ip=$(resolve_ip "$tunnel_host")
             if [ -n "$tunnel_ip" ]; then
-              echo "Resolved IP (attempt $attempt): $tunnel_ip"
+              echo "Resolved IP (attempt $attempt): ****"
               break
             fi
             sleep 3
@@ -249,7 +249,7 @@ jobs:
           if [ -z "$tunnel_ip" ]; then
             tunnel_ip=$(curl -s --max-time 5 "https://cloudflare-dns.com/dns-query?name=${tunnel_host}&type=A" -H "accept: application/dns-json" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);const a=(r.Answer||[]).find(x=>x.type===1);console.log(a?a.data:'')}catch(e){console.log('')}})")
           fi
-          echo "Tunnel IP: $tunnel_ip"
+          echo "Tunnel IP: ****"
 
           # 6. Publish tunnel metadata (one field per line) to repo via Contents API
           TUNNEL_FILE="/tmp/tunnel_meta_${SESSION_ID}.txt"
