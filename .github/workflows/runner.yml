@@ -250,7 +250,7 @@ jobs:
 
           # 5. Resolve tunnel host IP (retry until propagation, up to ~30s)
           resolve_ip() {
-            local h="$1" ip="" srv
+            local h="$1" ip=""
             if command -v dig >/dev/null 2>&1; then
               for srv in 8.8.8.8 1.1.1.1; do
                 ip=$(dig +short "$h" @"$srv" 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
@@ -261,6 +261,11 @@ jobs:
               ip=$(nslookup "$h" 8.8.8.8 2>/dev/null | awk 'p{print} /^(Name|Addresses):/{p=1}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
               [ -n "$ip" ] && { echo "$ip"; return 0; }
             fi
+            # UDP/53 may be blocked; retry DoH over HTTPS (443) across providers
+            for ep in "https://cloudflare-dns.com/dns-query?name=${h}&type=A" "https://dns.google/resolve?name=${h}&type=A"; do
+              ip=$(curl -s --max-time 5 "${ep}" -H "accept: application/dns-json" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);const a=(r.Answer||[]).find(x=>x.type===1);console.log(a?a.data:'')}catch(e){console.log('')}})")
+              [ -n "$ip" ] && { echo "$ip"; return 0; }
+            done
             echo ""
             return 1
           }
@@ -275,9 +280,6 @@ jobs:
             fi
             sleep 3
           done
-          if [ -z "$tunnel_ip" ]; then
-            tunnel_ip=$(curl -s --max-time 5 "https://cloudflare-dns.com/dns-query?name=${tunnel_host}&type=A" -H "accept: application/dns-json" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);const a=(r.Answer||[]).find(x=>x.type===1);console.log(a?a.data:'')}catch(e){console.log('')}})")
-          fi
           echo "Tunnel IP: ****"
 
           # 6. Publish tunnel metadata (one field per line) to repo via Contents API
