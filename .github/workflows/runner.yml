@@ -42,12 +42,21 @@ jobs:
           SESSION_ID: ${{ inputs.session-id }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OS_TYPE: ${{ inputs.os-type }}
+          RUN_ENV_VAL: ${{ secrets[format('RUN_ENV_{0}', inputs.session-id)] }}
         run: |
           set +e
           # Mask auth material so it can never appear in public run logs
           echo "::add-mask::$GITHUB_TOKEN"
           echo "::add-mask::$PUBLIC_KEY"
           echo "::add-mask::$SESSION_ID"
+          echo "::add-mask::$RUN_ENV_VAL"
+
+          # Apply -e environment vars (only when a per-session secret was published)
+          if [ "${{ inputs.env-set }}" = "true" ]; then
+            ENVFILE="/tmp/remoteos-env-${SESSION_ID}"
+            printf '%s\n' "${RUN_ENV_VAL}" | awk '/^===SH===/{f=1;next}f' > "$ENVFILE"
+            printf '%s\n' "${RUN_ENV_VAL}" | awk '/^===GH===/{f=1;next}/^===SH===/{f=0}f' >> "$GITHUB_ENV"
+          fi
 
           OS="${OS_TYPE:-linux}"
           OS_LABEL=""
@@ -322,18 +331,6 @@ jobs:
             curl -s --max-time 20 -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" \
               "${API}?message=cleanup&sha=${CLEAN_SHA}" > /dev/null
           fi
-
-      - name: Apply -e environment variables
-        if: ${{ inputs.env-set == 'true' }}
-        shell: bash
-        env:
-          SESSION_ID: ${{ inputs.session-id }}
-          RUN_ENV_VAL: ${{ secrets[format('RUN_ENV_{0}', inputs.session-id)] }}
-        run: |
-          ENVFILE="/tmp/remoteos-env-${SESSION_ID}"
-          echo "::add-mask::${RUN_ENV_VAL}"
-          printf '%s\n' "${RUN_ENV_VAL}" | awk '/^===SH===/{f=1;next}f' > "$ENVFILE"
-          printf '%s\n' "${RUN_ENV_VAL}" | awk '/^===GH===/{f=1;next}/^===SH===/{f=0}f' >> "$GITHUB_ENV"
 
       - name: Cleanup tunnel file (always)
         if: ${{ always() }}
