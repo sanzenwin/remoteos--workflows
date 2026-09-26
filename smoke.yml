@@ -1,0 +1,9 @@
+name: SmokeTest
+on:
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: hi
+        run: echo hello-from-smoke
