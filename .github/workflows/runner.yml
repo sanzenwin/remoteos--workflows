@@ -1,4 +1,4 @@
-ame: RemoteOS Runner
+name: RemoteOS Runner
 
 permissions:
   contents: write
