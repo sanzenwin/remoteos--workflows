@@ -1,4 +1,0 @@
-cooperation-viewing-str-tests.trycloudflare.com
-104.16.231.132
-root
-Ubuntu 24.04.5 LTS
