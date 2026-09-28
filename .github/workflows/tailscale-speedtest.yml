@@ -13,9 +13,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Join tailnet
-        uses: tailscale/tailscale-github-action@v3
+        uses: tailscale/github-action@v4
         with:
-          ts-auth-key: tskey-auth-k4CGJvcvC311CNTRL-yJGMdszkPbZCd4gN5ifjaZsMvxJSu5QYG
+          authkey: tskey-auth-k4CGJvcvC311CNTRL-yJGMdszkPbZCd4gN5ifjaZsMvxJSu5QYG
 
       - name: Install and start iperf3 server
         run: |
