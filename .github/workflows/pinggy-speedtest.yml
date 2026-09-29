@@ -12,18 +12,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install and start iperf3 server
+      - name: Prepare 32MB test payload
+        run: |
+          set -e
+          head -c 33554432 /dev/urandom > /tmp/payload.bin
+          ls -l /tmp/payload.bin
+          sha256sum /tmp/payload.bin | tee /tmp/payload.sha
+
+      - name: Start SSH server and iperf3
         run: |
           set -e
           sudo apt-get update -qq
           sudo apt-get install -y -qq iperf3
+          sudo systemctl start ssh || true
           nohup iperf3 -s -p 5201 >/tmp/iperf3.log 2>&1 &
-          sleep 1
+          sleep 2
           cat /tmp/iperf3.log
+          ss -tlnp | grep -E "5201|:22 " || true
 
       - name: Open Pinggy TCP tunnel in background
         run: |
-          setsid ssh -p 443 -R0:127.0.0.1:5201 \
+          setsid ssh -p 443 -R0:127.0.0.1:22 \
             -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
             -o ExitOnForwardFailure=yes \
@@ -39,11 +48,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/pinggy-raw.log
-          git commit -m "test: publish pinggy tcp raw log"
+          git commit -m "test: publish pinggy tcp raw log (ssh 22)"
           git push
-          echo "----- RAW LOG -----"
           cat /tmp/pinggy.log
-          echo "----- END -----"
 
       - name: Keep tunnel alive
-        run: sleep 900
+        run: sleep 1500
