@@ -7,29 +7,29 @@ permissions:
   contents: write
 
 jobs:
-  iperf:
+  fileserver:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start iperf3
+      - name: Create 64MB payload and serve over HTTP
         run: |
           set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq iperf3
-          nohup iperf3 -s -p 5201 >/tmp/iperf3.log 2>&1 &
+          head -c 67108864 /dev/urandom > /tmp/payload.bin
+          ls -l /tmp/payload.bin
+          cd /tmp
+          nohup python3 -m http.server 8080 --bind 0.0.0.0 >/tmp/http.log 2>&1 &
           sleep 2
-          cat /tmp/iperf3.log
-          ss -tlnp | grep 5201 || true
+          curl -s -o /dev/null -w "selfcheck_http_code=%{http_code} size=%{size_download}\n" http://127.0.0.1:8080/payload.bin --max-time 30 || true
 
-      - name: Open Pinggy TCP tunnel in background
+      - name: Open Pinggy HTTP tunnel in background
         run: |
-          setsid ssh -p 443 -R0:127.0.0.1:5201 \
+          setsid ssh -p 443 -R0:127.0.0.1:8080 \
             -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
             -o ExitOnForwardFailure=yes \
             -n \
-            QHpDcOr7zge+tcp@free.pinggy.io </dev/null >/tmp/pinggy.log 2>&1 &
+            QHpDcOr7zge@free.pinggy.io </dev/null >/tmp/pinggy.log 2>&1 &
           sleep 18
           cat /tmp/pinggy.log
 
@@ -40,9 +40,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/pinggy-raw.log
-          git commit -m "test: pinggy iperf3 single-stream measurement"
+          git commit -m "test: pinggy http file transfer 64MB"
           git push
           cat /tmp/pinggy.log
 
       - name: Keep tunnel alive
-        run: sleep 1500
+        run: sleep 1800
