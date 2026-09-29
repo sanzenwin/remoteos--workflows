@@ -7,28 +7,50 @@ permissions:
   contents: write
 
 jobs:
-  iperf:
+  updown:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start iperf3 server
+      - name: Start upload-receiving server on 9090
         run: |
           set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq iperf3
-          nohup iperf3 -s -p 5201 >/tmp/iperf3.log 2>&1 &
+          cat > /tmp/uploader.py <<'PY'
+          import http.server, socketserver, threading, sys
+          total = [0]
+          lock = threading.Lock()
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  n = 0
+                  while True:
+                      chunk = self.rfile.read(65536)
+                      if not chunk:
+                          break
+                      n += len(chunk)
+                  with lock:
+                      total[0] += n
+                  self.send_response(200)
+                  self.send_header("Content-Length", "2")
+                  self.end_headers()
+                  self.wfile.write(b"ok")
+              def log_message(self, *a):
+                  pass
+          class S(socketserver.ThreadingTCPServer):
+              allow_reuse_address = True
+          S(("0.0.0.0", 9090), H).serve_forever()
+          PY
+          nohup python3 /tmp/uploader.py >/tmp/uploader.log 2>&1 &
           sleep 2
-          ss -tlnp | grep 5201
+          ss -tlnp | grep 9090
 
-      - name: Open Pinggy TCP tunnel in background
+      - name: Open Pinggy HTTP tunnel to 9090 in background
         run: |
-          setsid ssh -p 443 -R0:127.0.0.1:5201 \
+          setsid ssh -p 443 -R0:127.0.0.1:9090 \
             -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
             -o ExitOnForwardFailure=yes \
             -n \
-            QHpDcOr7zge+tcp@free.pinggy.io </dev/null >/tmp/pinggy.log 2>&1 &
+            QHpDcOr7zge@free.pinggy.io </dev/null >/tmp/pinggy.log 2>&1 &
           sleep 18
           cat /tmp/pinggy.log
 
@@ -39,7 +61,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/pinggy-raw.log
-          git commit -m "test: pinggy tcp iperf upload measurement"
+          git commit -m "test: pinggy upload via POST"
           git push
           cat /tmp/pinggy.log
 
