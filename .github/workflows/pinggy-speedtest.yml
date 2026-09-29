@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   iperf:
@@ -29,8 +29,21 @@ jobs:
             -o ExitOnForwardFailure=yes \
             -n \
             QHpDcOr7zge@free.pinggy.io </dev/null >/tmp/pinggy.log 2>&1 &
-          sleep 15
+          sleep 20
           cat /tmp/pinggy.log
 
-      - name: Wait for client
-        run: sleep 150
+      - name: Publish raw log to repo
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          cp /tmp/pinggy.log .github/pinggy-raw.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/pinggy-raw.log
+          git commit -m "test: publish pinggy raw log"
+          git push
+          echo "----- RAW LOG -----"
+          cat /tmp/pinggy.log
+          echo "----- END -----"
+
+      - name: Keep tunnel alive
+        run: sleep 900
