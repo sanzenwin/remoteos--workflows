@@ -1,0 +1,50 @@
+name: pinggy-speedtest
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  variables: write
+
+jobs:
+  iperf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install and start iperf3 server
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iperf3
+          nohup iperf3 -s -p 5201 >/tmp/iperf3.log 2>&1 &
+          sleep 1
+          cat /tmp/iperf3.log
+
+      - name: Open Pinggy TCP tunnel
+        run: |
+          set -x
+          ssh -p 443 -R0:127.0.0.1:5201 \
+            -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=30 \
+            -o ExitOnForwardFailure=yes \
+            QHpDcOr7zge@free.pinggy.io 2>&1 | tee /tmp/pinggy.log
+
+      - name: Publish endpoint
+        run: |
+          cat /tmp/pinggy.log
+          ENDPOINT=$(grep -oE '[a-zA-Z0-9.-]+:[0-9]+' /tmp/pinggy.log | head -1)
+          if [ -z "$ENDPOINT" ]; then
+            URL=$(grep -oE 'https?://[a-zA-Z0-9./-]+' /tmp/pinggy.log | head -1)
+            ENDPOINT="$URL"
+          fi
+          echo "ENDPOINT=$ENDPOINT" | tee -a "$GITHUB_ENV"
+          curl -s -X PATCH \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/sanzenwin/remoteos--workflows/actions/variables/PINGGY_EP \
+            -d "{\"name\":\"PINGGY_EP\",\"value\":\"$ENDPOINT\"}"
+
+      - name: Keep tunnel alive
+        run: sleep 1500
