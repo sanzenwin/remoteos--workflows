@@ -1,7 +1,13 @@
+=== BORE ===
+Error: could not connect to bore.pub:7835:7835
+
+Caused by:
+    failed to lookup address information: Name does not resolve
+=== PINGGY ===
 Pseudo-terminal will not be allocated because stdin is not a terminal.
 Warning: Permanently added '[free.pinggy.io]:443' (RSA) to the list of known hosts.
-Allocated port 6 for remote forward to 127.0.0.1:9090
+Allocated port 7 for remote forward to 127.0.0.1:8080
 You are authenticated as sanzenwin@gmail.com
 Your tunnel will expire in 60 minutes. Upgrade to Pinggy Pro to get unrestricted tunnels. https://dashboard.pinggy.io
-https://kwjbc-172-172-203-33.free.pinggy.net
-https://uxryg-172-172-203-33.run.pinggy-free.link
+https://kfefb-20-102-46-195.free.pinggy.net
+https://svwhk-20-102-46-195.run.pinggy-free.link
