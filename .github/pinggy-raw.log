@@ -1,7 +1,14 @@
 Pseudo-terminal will not be allocated because stdin is not a terminal.
 Warning: Permanently added '[free.pinggy.io]:443' (RSA) to the list of known hosts.
-Allocated port 6 for remote forward to 127.0.0.1:5201
-You are authenticated as sanzenwin@gmail.com
-Your tunnel will expire in 60 minutes. Upgrade to Pinggy Pro to get unrestricted tunnels. https://dashboard.pinggy.io
-https://vcsss-4-154-182-81.free.pinggy.net
-https://ywzuk-4-154-182-81.run.pinggy-free.link
+Allocated port 3 for remote forward to 127.0.0.1:5201
+
+
+
+===========================
+   Login is not allowed:
+   A tunnel with the same token (QHpDcOr7zge) is already active. Close the existing tunnel, or use the force option.
+===========================
+
+
+
+Connection to free.pinggy.io closed by remote host.
