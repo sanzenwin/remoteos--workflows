@@ -5,7 +5,7 @@ on:
 
 permissions:
   contents: read
-  variables: write
+  actions: write
 
 jobs:
   iperf:
@@ -24,7 +24,6 @@ jobs:
 
       - name: Open Pinggy TCP tunnel
         run: |
-          set -x
           ssh -p 443 -R0:127.0.0.1:5201 \
             -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
@@ -36,8 +35,7 @@ jobs:
           cat /tmp/pinggy.log
           ENDPOINT=$(grep -oE '[a-zA-Z0-9.-]+:[0-9]+' /tmp/pinggy.log | head -1)
           if [ -z "$ENDPOINT" ]; then
-            URL=$(grep -oE 'https?://[a-zA-Z0-9./-]+' /tmp/pinggy.log | head -1)
-            ENDPOINT="$URL"
+            ENDPOINT=$(grep -oE 'https?://[a-zA-Z0-9./:_-]+' /tmp/pinggy.log | head -1)
           fi
           echo "ENDPOINT=$ENDPOINT" | tee -a "$GITHUB_ENV"
           curl -s -X PATCH \
