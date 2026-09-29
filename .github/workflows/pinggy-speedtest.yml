@@ -7,45 +7,32 @@ permissions:
   contents: write
 
 jobs:
-  updown:
+  multi:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start upload-receiving server on 9090
+      - name: Prepare payload and server
         run: |
           set -e
-          cat > /tmp/uploader.py <<'PY'
-          import http.server, socketserver, threading, sys
-          total = [0]
-          lock = threading.Lock()
-          class H(http.server.BaseHTTPRequestHandler):
-              def do_POST(self):
-                  n = 0
-                  while True:
-                      chunk = self.rfile.read(65536)
-                      if not chunk:
-                          break
-                      n += len(chunk)
-                  with lock:
-                      total[0] += n
-                  self.send_response(200)
-                  self.send_header("Content-Length", "2")
-                  self.end_headers()
-                  self.wfile.write(b"ok")
-              def log_message(self, *a):
-                  pass
-          class S(socketserver.ThreadingTCPServer):
-              allow_reuse_address = True
-          S(("0.0.0.0", 9090), H).serve_forever()
-          PY
-          nohup python3 /tmp/uploader.py >/tmp/uploader.log 2>&1 &
+          head -c 67108864 /dev/urandom > /tmp/payload.bin
+          cd /tmp
+          nohup python3 -m http.server 8080 --bind 0.0.0.0 >/tmp/http.log 2>&1 &
           sleep 2
-          ss -tlnp | grep 9090
+          curl -s -o /dev/null -w "selfcheck=%{http_code}\n" http://127.0.0.1:8080/payload.bin --max-time 30
 
-      - name: Open Pinggy HTTP tunnel to 9090 in background
+      - name: Start bore tunnel (bore.pub:7835)
         run: |
-          setsid ssh -p 443 -R0:127.0.0.1:9090 \
+          set -e
+          curl -fsSL --max-time 120 "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-unknown-linux-musl.tar.gz" -o /tmp/bore.tgz
+          tar -xzf /tmp/bore.tgz -C /tmp
+          nohup /tmp/bore local 8080 --to bore.pub:7835 >/tmp/bore.log 2>&1 &
+          sleep 12
+          cat /tmp/bore.log
+
+      - name: Start Pinggy HTTP tunnel
+        run: |
+          setsid ssh -p 443 -R0:127.0.0.1:8080 \
             -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
             -o ExitOnForwardFailure=yes \
@@ -54,16 +41,21 @@ jobs:
           sleep 18
           cat /tmp/pinggy.log
 
-      - name: Publish raw log to repo
+      - name: Publish endpoints
         run: |
           cd "$GITHUB_WORKSPACE"
-          cp /tmp/pinggy.log .github/pinggy-raw.log
+          {
+            echo "=== BORE ==="
+            cat /tmp/bore.log
+            echo "=== PINGGY ==="
+            cat /tmp/pinggy.log
+          } > .github/pinggy-raw.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/pinggy-raw.log
-          git commit -m "test: pinggy upload via POST"
+          git commit -m "test: bore+pinggy combined"
           git push
-          cat /tmp/pinggy.log
+          cat .github/pinggy-raw.log
 
-      - name: Keep tunnel alive
+      - name: Keep tunnels alive
         run: sleep 1800
