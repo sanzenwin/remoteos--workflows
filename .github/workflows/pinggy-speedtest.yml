@@ -22,22 +22,25 @@ jobs:
           sleep 1
           cat /tmp/iperf3.log
 
-      - name: Open Pinggy TCP tunnel
+      - name: Open Pinggy tunnel in background
         run: |
-          ssh -p 443 -R0:127.0.0.1:5201 \
+          setsid ssh -p 443 -R0:127.0.0.1:5201 \
             -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
             -o ExitOnForwardFailure=yes \
-            QHpDcOr7zge@free.pinggy.io 2>&1 | tee /tmp/pinggy.log
+            -n \
+            QHpDcOr7zge@free.pinggy.io </dev/null >/tmp/pinggy.log 2>&1 &
+          sleep 20
+          cat /tmp/pinggy.log
 
       - name: Publish endpoint
         run: |
           cat /tmp/pinggy.log
-          ENDPOINT=$(grep -oE '[a-zA-Z0-9.-]+:[0-9]+' /tmp/pinggy.log | head -1)
-          if [ -z "$ENDPOINT" ]; then
-            ENDPOINT=$(grep -oE 'https?://[a-zA-Z0-9./:_-]+' /tmp/pinggy.log | head -1)
-          fi
-          echo "ENDPOINT=$ENDPOINT" | tee -a "$GITHUB_ENV"
+          URL=$(grep -oE 'https?://[a-zA-Z0-9./:_-]+' /tmp/pinggy.log | head -1)
+          HOSTPORT=$(grep -oE '[a-zA-Z0-9.-]+\.pinggy\.[a-z]+:[0-9]+' /tmp/pinggy.log | head -1)
+          ENDPOINT="$HOSTPORT"
+          if [ -z "$ENDPOINT" ]; then ENDPOINT="$URL"; fi
+          echo "PUBLISHING=[$ENDPOINT]"
           curl -s -X PATCH \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
@@ -45,4 +48,4 @@ jobs:
             -d "{\"name\":\"PINGGY_EP\",\"value\":\"$ENDPOINT\"}"
 
       - name: Keep tunnel alive
-        run: sleep 1500
+        run: sleep 1200
