@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
   iperf:
@@ -30,22 +29,8 @@ jobs:
             -o ExitOnForwardFailure=yes \
             -n \
             QHpDcOr7zge@free.pinggy.io </dev/null >/tmp/pinggy.log 2>&1 &
-          sleep 20
+          sleep 15
           cat /tmp/pinggy.log
 
-      - name: Publish endpoint
-        run: |
-          cat /tmp/pinggy.log
-          URL=$(grep -oE 'https?://[a-zA-Z0-9./:_-]+' /tmp/pinggy.log | head -1)
-          HOSTPORT=$(grep -oE '[a-zA-Z0-9.-]+\.pinggy\.[a-z]+:[0-9]+' /tmp/pinggy.log | head -1)
-          ENDPOINT="$HOSTPORT"
-          if [ -z "$ENDPOINT" ]; then ENDPOINT="$URL"; fi
-          echo "PUBLISHING=[$ENDPOINT]"
-          curl -s -X PATCH \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/sanzenwin/remoteos--workflows/actions/variables/PINGGY_EP \
-            -d "{\"name\":\"PINGGY_EP\",\"value\":\"$ENDPOINT\"}"
-
-      - name: Keep tunnel alive
-        run: sleep 1200
+      - name: Wait for client
+        run: sleep 150
