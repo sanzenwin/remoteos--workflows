@@ -1,6 +1,6 @@
 Pseudo-terminal will not be allocated because stdin is not a terminal.
 Warning: Permanently added '[free.pinggy.io]:443' (RSA) to the list of known hosts.
-Allocated port 1 for remote forward to 127.0.0.1:22
+Allocated port 9 for remote forward to 127.0.0.1:5201
 You are authenticated as sanzenwin@gmail.com
 Your tunnel will expire in 60 minutes. Upgrade to Pinggy Pro to get unrestricted tunnels. https://dashboard.pinggy.io
-tcp://xqpqj-157-55-189-24.run.pinggy-free.link:36103
+tcp://aykvl-52-241-24-211.run.pinggy-free.link:37355
