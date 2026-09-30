@@ -1,4 +1,4 @@
-name: pinggy-speedtest
+name: scp-parallel-test
 
 on:
   workflow_dispatch: {}
@@ -7,80 +7,53 @@ permissions:
   contents: write
 
 jobs:
-  updown:
+  parallel:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start dual server (fixed POST)
+      - name: Download dropbear, gen 8x16MB shards, start sshd
         run: |
           set -e
-          head -c 67108864 /dev/urandom > /tmp/payload.bin
-          cat > /tmp/updl.py <<'PY'
-          import http.server, socketserver
-          class H(http.server.BaseHTTPRequestHandler):
-              def do_GET(self):
-                  with open("/tmp/payload.bin","rb") as f:
-                      self.send_response(200)
-                      self.send_header("Content-Length", "67108864")
-                      self.end_headers()
-                      while True:
-                          c = f.read(65536)
-                          if not c: break
-                          self.wfile.write(c)
-              def do_POST(self):
-                  n = int(self.headers.get('Content-Length', 0))
-                  remain = n
-                  while remain > 0:
-                      c = self.rfile.read(min(65536, remain))
-                      if not c: break
-                      remain -= len(c)
-                  self.send_response(200)
-                  self.send_header("Content-Length","2")
-                  self.end_headers()
-                  self.wfile.write(b"ok")
-              def log_message(self,*a): pass
-          class S(socketserver.ThreadingTCPServer): 
-              allow_reuse_address = True
-              daemon_threads = True
-          S(("0.0.0.0", 8080), H).serve_forever()
-          PY
-          nohup python3 /tmp/updl.py >/tmp/updl.log 2>&1 &
+          curl -fsSL --max-time 120 https://github.com/sagemathinc/dropbear/releases/download/main/dropbear-x86_64-linux-musl.tar.xz | tar -xJf - -C /tmp
+          ls /tmp/dropbear-x86_64-linux-musl/
+          sudo mkdir -p /root/.ssh
+          echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF/z8LFseHBX7pwTM6Z+0zLPr1AsrzlJ6AKcFATAeNZn scptest' | sudo tee /root/.ssh/authorized_keys > /dev/null
+          sudo mv /tmp/dropbear-x86_64-linux-musl/dropbear /usr/local/bin/dropbear
+          sudo mv /tmp/dropbear-x86_64-linux-musl/dropbearkey /usr/local/bin/dropbearkey
+          sudo chmod +x /usr/local/bin/dropbear /usr/local/bin/dropbearkey
+          sudo mkdir -p /etc/dropbear
+          sudo /usr/local/bin/dropbearkey -t ed25519 -f /etc/dropbear/ed25519_host_key 2>&1 | sed 's/.*/****/'
+          sudo nohup /usr/local/bin/dropbear -E -p 2222 -r /etc/dropbear/ed25519_host_key > /tmp/dropbear.log 2>&1 &
           sleep 2
-          curl -s -o NUL -w "self_up=%{http_code} bytes=%{size_upload}\n" -X POST --max-time 60 -d @/tmp/payload.bin http://127.0.0.1:8080/x || true
+          ss -tlnp | grep :2222
+          mkdir -p /tmp/shards
+          for i in \; do
+            head -c 16777216 /dev/urandom > /tmp/shards/shard\.bin
+          done
+          ls -l /tmp/shards/
 
-      - name: Start cloudflared
+      - name: Start cloudflared tunnel to tcp 2222
         run: |
           set -e
           curl -fsSL --max-time 120 "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o /tmp/cloudflared
           chmod +x /tmp/cloudflared
-          nohup /tmp/cloudflared tunnel --url http://127.0.0.1:8080 --no-autoupdate >/tmp/cf.log 2>&1 &
+          nohup /tmp/cloudflared tunnel --url tcp://localhost:2222 --no-autoupdate > /tmp/cf.log 2>&1 &
           sleep 20
-          grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" /tmp/cf.log | head -1
+          HOST=\
+          echo "HOST=\System.Management.Automation.Internal.Host.InternalHost"
+          echo "\System.Management.Automation.Internal.Host.InternalHost" > /tmp/host.txt
 
-      - name: Start Pinggy HTTP tunnel
+      - name: Publish host
         run: |
-          setsid ssh -p 443 -R0:127.0.0.1:8080 \
-            -o StrictHostKeyChecking=no \
-            -o ServerAliveInterval=30 \
-            -o ExitOnForwardFailure=yes \
-            -n \
-            QHpDcOr7zge@free.pinggy.io </dev/null >/tmp/pinggy.log 2>&1 &
-          sleep 18
-          cat /tmp/pinggy.log
-
-      - name: Publish endpoints
-        run: |
-          cd "$GITHUB_WORKSPACE"
-          CF=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" /tmp/cf.log | head -1)
-          PG=$(grep -oE "https://[a-z0-9.-]+\.run\.pinggy-free\.link" /tmp/pinggy.log | head -1)
-          { echo "CF=$CF"; echo "PG=$PG"; } > .github/pinggy-raw.log
+          cd "\"
+          cp /tmp/host.txt .github/pinggy-raw.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/pinggy-raw.log
-          git commit -m "test: dual up+down fixed POST"
+          git commit -m "test: scp parallel host"
           git push
           cat .github/pinggy-raw.log
 
-      - name: Keep tunnels alive
-        run: sleep 2400
+      - name: Keep tunnel alive
+        run: sleep 1800
