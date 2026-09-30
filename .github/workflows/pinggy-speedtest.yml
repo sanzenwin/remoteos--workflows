@@ -12,14 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start dual upload+download server
+      - name: Start dual server (fixed POST)
         run: |
           set -e
           head -c 67108864 /dev/urandom > /tmp/payload.bin
           cat > /tmp/updl.py <<'PY'
-          import http.server, socketserver, threading
-          received = [0]
-          lock = threading.Lock()
+          import http.server, socketserver
           class H(http.server.BaseHTTPRequestHandler):
               def do_GET(self):
                   with open("/tmp/payload.bin","rb") as f:
@@ -31,25 +29,25 @@ jobs:
                           if not c: break
                           self.wfile.write(c)
               def do_POST(self):
-                  n = 0
-                  while True:
-                      c = self.rfile.read(65536)
+                  n = int(self.headers.get('Content-Length', 0))
+                  remain = n
+                  while remain > 0:
+                      c = self.rfile.read(min(65536, remain))
                       if not c: break
-                      n += len(c)
-                  with lock: received[0] += n
+                      remain -= len(c)
                   self.send_response(200)
                   self.send_header("Content-Length","2")
                   self.end_headers()
                   self.wfile.write(b"ok")
               def log_message(self,*a): pass
-          class S(socketserver.ThreadingTCPServer): allow_reuse_address=True
-          socketserver.ThreadingTCPServer.allow_reuse_address = True
+          class S(socketserver.ThreadingTCPServer): 
+              allow_reuse_address = True
+              daemon_threads = True
           S(("0.0.0.0", 8080), H).serve_forever()
           PY
           nohup python3 /tmp/updl.py >/tmp/updl.log 2>&1 &
           sleep 2
-          curl -s -o /dev/null -w "self_dl=%{http_code}\n" --max-time 20 http://127.0.0.1:8080/payload.bin || true
-          curl -s -o /dev/null -w "self_up=%{http_code}\n" -X POST --max-time 20 -d @/tmp/payload.bin http://127.0.0.1:8080/|| true
+          curl -s -o NUL -w "self_up=%{http_code} bytes=%{size_upload}\n" -X POST --max-time 60 -d @/tmp/payload.bin http://127.0.0.1:8080/x || true
 
       - name: Start cloudflared
         run: |
@@ -76,14 +74,11 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           CF=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" /tmp/cf.log | head -1)
           PG=$(grep -oE "https://[a-z0-9.-]+\.run\.pinggy-free\.link" /tmp/pinggy.log | head -1)
-          {
-            echo "CF=$CF"
-            echo "PG=$PG"
-          } > .github/pinggy-raw.log
+          { echo "CF=$CF"; echo "PG=$PG"; } > .github/pinggy-raw.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/pinggy-raw.log
-          git commit -m "test: dual up+down server"
+          git commit -m "test: dual up+down fixed POST"
           git push
           cat .github/pinggy-raw.log
 
