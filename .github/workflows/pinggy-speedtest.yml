@@ -16,7 +16,6 @@ jobs:
         run: |
           set -e
           curl -fsSL --max-time 120 https://github.com/sagemathinc/dropbear/releases/download/main/dropbear-x86_64-linux-musl.tar.xz | tar -xJf - -C /tmp
-          ls /tmp/dropbear-x86_64-linux-musl/
           sudo mkdir -p /root/.ssh
           echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF/z8LFseHBX7pwTM6Z+0zLPr1AsrzlJ6AKcFATAeNZn scptest' | sudo tee /root/.ssh/authorized_keys > /dev/null
           sudo mv /tmp/dropbear-x86_64-linux-musl/dropbear /usr/local/bin/dropbear
@@ -28,8 +27,8 @@ jobs:
           sleep 2
           ss -tlnp | grep :2222
           mkdir -p /tmp/shards
-          for i in \; do
-            head -c 16777216 /dev/urandom > /tmp/shards/shard\.bin
+          for i in 0 1 2 3 4 5 6 7; do
+            head -c 16777216 /dev/urandom > /tmp/shards/shard$i.bin
           done
           ls -l /tmp/shards/
 
@@ -40,13 +39,12 @@ jobs:
           chmod +x /tmp/cloudflared
           nohup /tmp/cloudflared tunnel --url tcp://localhost:2222 --no-autoupdate > /tmp/cf.log 2>&1 &
           sleep 20
-          HOST=\
-          echo "HOST=\System.Management.Automation.Internal.Host.InternalHost"
-          echo "\System.Management.Automation.Internal.Host.InternalHost" > /tmp/host.txt
+          HOST=$(grep -oE '[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
+          echo "$HOST" > /tmp/host.txt
 
       - name: Publish host
         run: |
-          cd "\"
+          cd "$GITHUB_WORKSPACE"
           cp /tmp/host.txt .github/pinggy-raw.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
