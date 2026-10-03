@@ -1,0 +1,5 @@
+0magent.21tunnel.com
+66.163.115.147
+root
+Ubuntu 24.04.5 LTS
+7443
