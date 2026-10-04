@@ -1,0 +1,786 @@
+name: RemoteOS Runner
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      session-id:
+        required: true
+        description: 'Session ID'
+      username:
+        required: true
+        description: 'Username'
+      os-type:
+        required: true
+        description: 'OS type (linux/macos/windows)'
+      tty:
+        required: false
+        default: 'false'
+        description: 'Interactive mode (keeps runner alive)'
+      env-set:
+        required: false
+        default: 'false'
+        description: 'Whether -e env vars were published as a per-session repo secret'
+      timeout-minutes:
+        required: false
+        default: '30'
+        description: 'Job timeout in minutes'
+      tunnel-type:
+        required: false
+        default: 'cloudflare'
+        description: 'Tunnel backend (cloudflare|bore|pinggy|ngrok|21tunnel)'
+      tunnel-server:
+        required: false
+        default: ''
+        description: 'Relay host for the backend: bore host or host:port (default bore.pub); pinggy host (default free.pinggy.io); unused by cloudflare/ngrok/21tunnel'
+      tunnel-port:
+        required: false
+        default: ''
+        description: 'Port the bore relay is already listening on, that the client connects to (numeric, bore only; empty means the relay default). It is NOT a port to request: the backend only forwards to this runner own SSH port, and the port you dial is parsed from the backend log'
+
+jobs:
+  tunnel:
+    runs-on: ${{ inputs.os-type == 'macos' && 'macos-latest' || inputs.os-type == 'windows' && 'windows-latest' || 'ubuntu-latest' }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout-minutes == '' && '30' || inputs.timeout-minutes) }}
+    env:
+      PUBLIC_KEY: ${{ secrets[format('SSH_KEY_{0}', inputs.session-id)] }}
+      TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+      SESSION_ID: ${{ inputs.session-id }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OS_TYPE: ${{ inputs.os-type }}
+      RUN_ENV_VAL: ${{ secrets[format('RUN_ENV_{0}', inputs.session-id)] }}
+      TUNNEL_TYPE_INPUT: ${{ inputs.tunnel-type }}
+      TUNNEL_SERVER_INPUT: ${{ inputs.tunnel-server }}
+      TUNNEL_PORT_INPUT: ${{ inputs.tunnel-port }}
+    steps:
+      - name: Setup and provision tools
+        shell: bash
+        run: |
+          set +e
+          # Mask auth material so it can never appear in public run logs
+          echo "::add-mask::$GITHUB_TOKEN"
+          echo "::add-mask::$PUBLIC_KEY"
+          echo "::add-mask::$SESSION_ID"
+          echo "::add-mask::$RUN_ENV_VAL"
+
+          # Apply -e environment vars (only when a per-session secret was published)
+          if [ "${{ inputs.env-set }}" = "true" ]; then
+            ENVFILE="/tmp/remoteos-env-${SESSION_ID}"
+            printf '%s\n' "${RUN_ENV_VAL}" | awk '/^===SH===/{f=1;next}f' > "$ENVFILE"
+            printf '%s\n' "${RUN_ENV_VAL}" | awk '/^===GH===/{f=1;next}/^===SH===/{f=0}f' >> "$GITHUB_ENV"
+          fi
+
+          OS="${OS_TYPE:-linux}"
+          OS_LABEL=""
+          case "$OS" in
+            macos)
+              # The arch comes from the runner (X64 / ARM64), the same source the ngrok
+              # gate reads: uname -m cannot be trusted here, because on macOS it reports
+              # the host's architecture rather than anything about this runner.
+              OS_LABEL="macOS $(sw_vers -productVersion) ${RUNNER_ARCH:-unknown}"
+              ;;
+            linux)
+              OS_LABEL=$(grep -m1 '^PRETTY_NAME=' /etc/os-release | cut -d'"' -f2)
+              ;;
+            windows)
+              OS_LABEL="Windows $(cmd //c ver 2>/dev/null | tr -d '\r\n' | sed -n 's/.*\[Version \([^]]*\)\].*/\1/p')"
+              ;;
+          esac
+          [ -z "$OS_LABEL" ] && OS_LABEL="$OS"
+          echo "OS: $OS_LABEL"
+
+          # 1. Provision tools: every run first fetches the prebuilt per-platform
+          #    bundle from this repo's Release. A 404 means first boot (or the
+          #    repo was recreated, which also drops Releases): fetch from
+          #    upstream, repack and publish the bundle for instant reuse.
+          DARCH="amd64"
+          [ "$(uname -m)" = "arm64" ] && DARCH="arm64"
+          if [ "$OS" = "windows" ]; then
+            CF_FILE="/tmp/cloudflared.exe"
+            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+            DBSRC=""
+          elif [ "$OS" = "macos" ]; then
+            CF_FILE="/tmp/cloudflared"
+            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${DARCH}.tgz"
+            DBSRC=""
+          else
+            CF_FILE="/tmp/cloudflared"
+            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+            DBSRC="/tmp/dropbear-x86_64-linux-musl"
+          fi
+
+          BORE_ARCH="x86_64"
+          [ "$DARCH" = "arm64" ] && BORE_ARCH="aarch64"
+          if [ "$OS" = "windows" ]; then
+            BORE_FILE="/tmp/bore.exe"
+            BORE_URL="https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip"
+          elif [ "$OS" = "macos" ]; then
+            BORE_FILE="/tmp/bore"
+            BORE_URL="https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-${BORE_ARCH}-apple-darwin.tar.gz"
+          else
+            BORE_FILE="/tmp/bore"
+            BORE_URL="https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-${BORE_ARCH}-unknown-linux-musl.tar.gz"
+          fi
+
+          TOOLS_ASSET="tools-${OS}-v2.tar.gz"
+          TOOLS_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/tools/${TOOLS_ASSET}"
+
+          if curl -fsSL --max-time 60 "$TOOLS_URL" -o "/tmp/${TOOLS_ASSET}"; then
+            tar -xzf "/tmp/${TOOLS_ASSET}" -C /tmp
+            echo "Extracted ${TOOLS_ASSET} from Release"
+          else
+            echo "First boot (${TOOLS_ASSET} not in Release); downloading from upstream..."
+            if [ ! -f "$CF_FILE" ]; then
+              if [ "$OS" = "macos" ]; then
+                curl -sL --max-time 120 "$CF_URL" | tar -xz -C /tmp
+              else
+                curl -sL --max-time 120 "$CF_URL" -o "$CF_FILE"
+              fi
+            fi
+            if [ -n "$DBSRC" ] && [ ! -f "${DBSRC}/dropbear" ]; then
+              curl -sL --max-time 120 https://github.com/sagemathinc/dropbear/releases/download/main/dropbear-x86_64-linux-musl.tar.xz | tar -xJf - -C /tmp
+            fi
+            if [ ! -f "$BORE_FILE" ]; then
+              curl -fsSL --max-time 120 "$BORE_URL" -o /tmp/bore-dl || { echo "Error: bore download failed ($BORE_FILE)"; exit 1; }
+              # The windows release is a zip; linux and macos are tar.gz. Extract with a
+              # tool that can read the one we downloaded: this step is shell: bash, and
+              # on a windows runner that is Git Bash, whose tar is GNU tar 1.35 and
+              # refuses a zip with "This does not look like a tar archive". tar -xf only
+              # appears to work because PowerShell ships bsdtar. unzip is in Git Bash and
+              # on the linux runner, so this adds no dependency.
+              case "$BORE_URL" in
+                *.zip) bore_extract_rc=0; unzip -qo /tmp/bore-dl -d /tmp > /dev/null 2>&1 || bore_extract_rc=$? ;;
+                *)      bore_extract_rc=0; tar -xzf /tmp/bore-dl -C /tmp > /dev/null 2>&1 || bore_extract_rc=$? ;;
+              esac
+              rm -f /tmp/bore-dl
+              if [ "$bore_extract_rc" -ne 0 ]; then
+                echo "Error: bore extract failed ($OS, exit $bore_extract_rc)"
+                exit 1
+              fi
+              [ -f "$BORE_FILE" ] || { echo "Error: bore binary missing after extract: $BORE_FILE"; exit 1; }
+            fi
+            # Repack and publish to this repo's Release for instant next-time reuse.
+            # Bundle is flat: just the bare binaries/dir, no nested archives.
+            rm -f "/tmp/${TOOLS_ASSET}"
+            if ! ( cd /tmp && tar -czf "${TOOLS_ASSET}" "$(basename "${CF_FILE}")" "$(basename "${BORE_FILE}")" ${DBSRC:+${DBSRC#/tmp/}} ); then
+              rm -f "/tmp/${TOOLS_ASSET}"
+              exit 1
+            fi
+            if [ -s "/tmp/${TOOLS_ASSET}" ]; then
+              REL_ID=$(curl -s --max-time 20 -X POST -H "Authorization: token ${GITHUB_TOKEN}" \
+                -H "Content-Type: application/json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases" \
+                -d '{"tag_name":"tools","name":"RemoteOS Tools","body":"Prebuilt per-platform tool bundles","draft":false,"prerelease":false}' \
+                | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch(e){console.log('')}})" 2>/dev/null)
+              if [ -z "$REL_ID" ]; then
+                REL_ID=$(curl -s --max-time 20 -H "Authorization: token ${GITHUB_TOKEN}" \
+                  "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/tools" \
+                  | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch(e){console.log('')}})" 2>/dev/null)
+              fi
+              curl -s --max-time 120 -X POST -H "Authorization: token ${GITHUB_TOKEN}" \
+                -H "Content-Type: application/gzip" \
+                "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}/assets?name=${TOOLS_ASSET}" \
+                --data-binary "@/tmp/${TOOLS_ASSET}" > /dev/null
+              echo "Published ${TOOLS_ASSET} to Release"
+            fi
+          fi
+          chmod +x "$CF_FILE" 2>/dev/null || true
+          chmod +x "$BORE_FILE" 2>/dev/null || true
+          # Hand state to the next steps: a new step is a new shell, so anything a later
+          # step reads has to go through $GITHUB_ENV. CF_FILE and BORE_FILE are set above
+          # and read by the cloudflare and bore branches of the tunnel step; leaving them
+          # out makes those branches fail on `binary missing:` with an empty path.
+          {
+            echo "OS=$OS"
+            echo "OS_LABEL=$OS_LABEL"
+            echo "CF_FILE=$CF_FILE"
+            echo "BORE_FILE=$BORE_FILE"
+          } >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Start SSH server
+        shell: bash
+        run: |
+          set +e
+          # 2. Start SSH server for this platform
+          if [ "$OS" = "linux" ]; then
+            # dropbear as root (downloaded in step 1 above)
+            sudo mkdir -p /root/.ssh
+            sudo chmod 700 /root/.ssh
+            echo "$PUBLIC_KEY" | sudo tee /root/.ssh/authorized_keys > /dev/null
+            sudo chmod 600 /root/.ssh/authorized_keys
+            sudo mv /tmp/dropbear-x86_64-linux-musl/dropbear /usr/local/bin/dropbear
+            sudo mv /tmp/dropbear-x86_64-linux-musl/dropbearkey /usr/local/bin/dropbearkey
+            sudo chmod +x /usr/local/bin/dropbear /usr/local/bin/dropbearkey
+            sudo mkdir -p /etc/dropbear
+            sudo /usr/local/bin/dropbearkey -t ed25519 -f /etc/dropbear/ed25519_host_key 2>&1 | sed 's/.*/****/'
+            sudo nohup /usr/local/bin/dropbear -E -p 2222 -r /etc/dropbear/ed25519_host_key > /tmp/dropbear.log 2>&1 &
+            sleep 2
+            if ! ss -tlnp | grep -q :2222; then
+              echo "Error: dropbear failed to start"
+              cat /tmp/dropbear.log 2>/dev/null
+              exit 1
+            fi
+            ssh_user="root"
+            TUNNEL_PORT="2222"
+
+          elif [ "$OS" = "macos" ]; then
+            # macOS: Remote Login (launchd sshd) on port 22 as user runner; fallback: direct sshd on 2222
+            sudo mkdir -p /Users/runner/.ssh
+            sudo chmod 700 /Users/runner/.ssh
+            echo "$PUBLIC_KEY" | sudo tee /Users/runner/.ssh/authorized_keys > /dev/null
+            sudo chmod 600 /Users/runner/.ssh/authorized_keys
+            sudo chown -R runner:staff /Users/runner/.ssh
+            TUNNEL_PORT="22"
+            sudo systemsetup -setremotelogin on >/dev/null 2>&1 || true
+            sudo launchctl kickstart -k system/com.openssh.sshd 2>/dev/null || true
+            ssh_ok=""
+            for a in $(seq 1 15); do
+              if sudo lsof -iTCP:22 -sTCP:LISTEN >/dev/null 2>&1 || netstat -an | grep -E ':22 .*LISTEN' >/dev/null; then
+                ssh_ok=1
+                echo "sshd listening on :22 (attempt $a)"
+                break
+              fi
+              sleep 1
+            done
+            if [ -z "$ssh_ok" ]; then
+              # fallback: direct daemon on 2222
+              echo "Remote Login sshd not up; trying direct sshd on :2222"
+              sudo /usr/sbin/sshd -p 2222 2>/dev/null || true
+              TUNNEL_PORT="2222"
+              sleep 2
+              for a in $(seq 1 10); do
+                if sudo lsof -iTCP:2222 -sTCP:LISTEN >/dev/null 2>&1 || netstat -an | grep -E ':2222 .*LISTEN' >/dev/null; then
+                  ssh_ok=1
+                  echo "sshd listening on :2222 (attempt $a)"
+                  break
+                fi
+                sleep 1
+              done
+            fi
+            if [ -z "$ssh_ok" ]; then
+              echo "Error: sshd failed to start"
+              exit 1
+            fi
+            ssh_user="runner"
+
+          else
+            # Windows OpenSSH Server
+            powershell.exe -NoProfile -Command '
+              $ErrorActionPreference = "Stop"
+              $key = [string]$env:PUBLIC_KEY
+              # Admin users: administrators_authorized_keys
+              $admDir = "C:\ProgramData\ssh"
+              if (-not (Test-Path $admDir)) { New-Item -ItemType Directory -Path $admDir -Force | Out-Null }
+              $admKeys = Join-Path $admDir "administrators_authorized_keys"
+              if (Test-Path $admKeys) { Remove-Item $admKeys -Force }
+              Set-Content -Path $admKeys -Value $key -Encoding Ascii
+              & icacls.exe $admKeys /inheritance:r /grant "SYSTEM:F" /grant "Administrators:F" | Out-Null
+              # Non-admin user (runner): profile authorized_keys
+              $usrKeys = "C:\Users\runner\.ssh\authorized_keys"
+              New-Item -ItemType Directory -Path (Split-Path $usrKeys) -Force | Out-Null
+              Set-Content -Path $usrKeys -Value $key -Encoding Ascii
+              # Ensure sshd service exists
+              if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
+                Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+              }
+              # Force port 2222
+              $conf = "C:\ProgramData\ssh\sshd_config"
+              if (Test-Path $conf) {
+                $lines = Get-Content $conf
+                $lines = $lines -replace "^#?Port .*", "Port 2222"
+                if (-not ($lines -match "^Port ")) { $lines += "Port 2222" }
+                $lines | Set-Content $conf -Encoding Ascii
+              }
+              $svc = Get-Service sshd
+              if ($svc.Status -ne "Running") { Start-Service sshd } else { Restart-Service sshd -Force }
+              Start-Sleep -Seconds 3
+            '
+            if ! netstat -an | grep ':2222' | grep -qi listening; then
+              echo "Error: sshd failed to listen on 2222"
+              exit 1
+            fi
+            ssh_user=$(powershell.exe -NoProfile -Command "Write-Output ([Environment]::UserName)" 2>/dev/null | tr -d '\r\n')
+            [ -z "$ssh_user" ] && ssh_user="runneradmin"
+          TUNNEL_PORT="2222"
+          fi
+          echo "SSH user: ****"
+          {
+            echo "ssh_user=$ssh_user"
+            echo "TUNNEL_PORT=$TUNNEL_PORT"
+          } >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Start the tunnel
+        shell: bash
+        run: |
+          set +e
+          # 3. Start the tunnel for the requested backend.
+          #    The product token rides in the per-session secret's ===GH=== block.
+          #    $GITHUB_ENV only reaches *later* steps, so read it from RUN_ENV_VAL here.
+          TUNNEL_TOKEN=$(printf '%s\n' "$RUN_ENV_VAL" | sed -n 's/^REMOTEOS_TUNNEL_TOKEN=//p' | head -1)
+          [ -n "$TUNNEL_TOKEN" ] && echo "::add-mask::$TUNNEL_TOKEN"
+
+          TUNNEL_TYPE="$TUNNEL_TYPE_INPUT"
+          [ -z "$TUNNEL_TYPE" ] && TUNNEL_TYPE="cloudflare"
+
+          # tunnel-port is the port the RELAY is already listening on, which the client
+          # then connects to. Every backend forwards to this runner's own sshd port
+          # ($TUNNEL_PORT), which is set above per OS; nothing here asks for a port.
+          if [ -z "$TUNNEL_PORT" ]; then
+            echo "Error: the runner SSH port was not resolved for os '$OS'; cannot expose it through a tunnel"
+            exit 1
+          fi
+          TUNNEL_RELAY_PORT="$TUNNEL_PORT_INPUT"
+          case "$TUNNEL_RELAY_PORT" in
+            ''|*[!0-9]*)
+              if [ -n "$TUNNEL_RELAY_PORT" ]; then
+                echo "Error: tunnel-port must be numeric, got '$TUNNEL_RELAY_PORT'"
+                echo "  Fix tunnels.<backend>.port in config.json (it must be a plain port number)"
+                exit 1
+              fi
+              ;;
+            *)
+              if [ "$TUNNEL_RELAY_PORT" -lt 1 ] || [ "$TUNNEL_RELAY_PORT" -gt 65535 ]; then
+                echo "Error: tunnel-port out of range (1-65535): '$TUNNEL_RELAY_PORT'"
+                exit 1
+              fi
+              ;;
+          esac
+
+          # pinggy only needs ssh, which every runner shell provides. ngrok publishes
+          # all three of this template's OSes on both architectures, so the gate has to
+          # resolve a platform/arch pair into a specific asset rather than test one
+          # allowed combination: an OS-only check lets a linux-arm64 runner through and
+          # then fails on an amd64 binary far from the cause. $RUNNER_ARCH is the runner's
+          # own statement of its arch (X64 / ARM64 / ARM), the same kind of default runner
+          # variable this script already reads (GITHUB_REPOSITORY above).
+          #
+          # Every URL here was probed on 2026-10-04 and returned HTTP 200. ngrok publishes
+          # no checksum manifest (SHA256SUMS / checksums.txt / .sha256 all 404), so this
+          # download is not verified beyond TLS. That matches cloudflare and bore.
+          #
+          # NGROK_URL / NGROK_FILE / NGROK_FMT are intentionally not local: they are this
+          # function's only output channel, the same shape as MYTUNNEL_* below.
+          resolve_ngrok_asset() {
+            local file="/tmp/ngrok" url="" fmt=".zip"
+            local os="$OS" arch="${RUNNER_ARCH:-}"
+            case "${os}-${arch}" in
+              linux-X64)         fmt=".tgz"; url="ngrok-v3-stable-linux-amd64.tgz" ;;
+              linux-ARM64)       fmt=".tgz"; url="ngrok-v3-stable-linux-arm64.tgz" ;;
+              macos-X64)         url="ngrok-v3-stable-darwin-amd64.zip" ;;
+              macos-ARM64)       url="ngrok-v3-stable-darwin-arm64.zip" ;;
+              windows-X64)       file="/tmp/ngrok.exe"; url="ngrok-v3-stable-windows-amd64.zip" ;;
+              windows-ARM64)     file="/tmp/ngrok.exe"; url="ngrok-v3-stable-windows-arm64.zip" ;;
+              *)
+                echo "Error: tunnel backend '$TUNNEL_TYPE' has no build for this runner (os: $os, arch: ${arch:-unset})"
+                echo "  ngrok publishes linux, macos and windows, each on x64 and arm64."
+                echo "  Fix: use a runner whose (os, arch) is in that list, or a backend with a native build (bore, pinggy, cloudflare, 21tunnel)."
+                return 1
+                ;;
+            esac
+            NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/${url}"
+            NGROK_FILE="$file"
+            NGROK_FMT="$fmt"
+          }
+
+          # 21tunnel publishes four targets and no others: linux-arm64, linux-x86_64,
+          # macos-x86_64 and windows-x86_64.exe. So x64 runs everywhere and arm64 only
+          # alongside linux. macOS on arm64 is refused rather than run under Rosetta 2,
+          # which the vendor's own installer falls back to: a tunnel that silently
+          # emulates is harder to reason about than one that reports why it cannot start,
+          # and whether GitHub's arm64 macOS runners carry Rosetta was never verified.
+          require_mytunnel_build() {
+            local arch="${RUNNER_ARCH:-}"
+            if [ "$arch" = "X64" ]; then
+              return 0
+            fi
+            if [ "$arch" = "ARM64" ] && [ "$OS" = "linux" ]; then
+              return 0
+            fi
+            echo "Error: tunnel backend '$TUNNEL_TYPE' has no build for this runner (os: $OS, arch: ${arch:-unset})"
+            echo "  21tunnel publishes x86_64 builds for linux, macos and windows, plus an arm64 build for linux only."
+            echo "  Fix: use an x64 runner, or a linux arm64 runner, or a backend with a native build (bore, pinggy, cloudflare)."
+            exit 1
+          }
+
+          case "$TUNNEL_TYPE" in
+            bore)
+              BORE_SERVER="$TUNNEL_SERVER_INPUT"
+              [ -z "$BORE_SERVER" ] && BORE_SERVER="bore.pub"
+              # A server given as host:port already carries its port.
+              case "$BORE_SERVER" in
+                *:*) BORE_TARGET="$BORE_SERVER" ;;
+                *) BORE_TARGET="${BORE_SERVER}${TUNNEL_RELAY_PORT:+:$TUNNEL_RELAY_PORT}" ;;
+              esac
+              if [ ! -x "$BORE_FILE" ]; then
+                echo "Error: bore binary missing: $BORE_FILE"
+                exit 1
+              fi
+              if [ "$OS" = "macos" ]; then
+                sudo nohup "$BORE_FILE" local "${TUNNEL_PORT}" --to "$BORE_TARGET" > /tmp/tunnel.log 2>&1 &
+              else
+                nohup "$BORE_FILE" local "${TUNNEL_PORT}" --to "$BORE_TARGET" > /tmp/tunnel.log 2>&1 &
+              fi
+              ;;
+            pinggy)
+              if [ -z "$TUNNEL_TOKEN" ]; then
+                echo "Error: pinggy requires remoteos config tunnels.pinggy.token"
+                exit 1
+              fi
+              PINGGY_SERVER="$TUNNEL_SERVER_INPUT"
+              [ -z "$PINGGY_SERVER" ] && PINGGY_SERVER="free.pinggy.io"
+              nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ExitOnForwardFailure=yes -p 443 -N -R 0:localhost:"${TUNNEL_PORT}" "${TUNNEL_TOKEN}@${PINGGY_SERVER}" > /tmp/tunnel.log 2>&1 &
+              ;;
+            ngrok)
+              if [ -z "$TUNNEL_TOKEN" ]; then
+                echo "Error: ngrok requires remoteos config tunnels.ngrok.token (authtoken)"
+                exit 1
+              fi
+              resolve_ngrok_asset || exit 1
+              # Download to a file first: a piped curl|tar reports tar's status, so a
+              # failed download would surface as a confusing extract error.
+              NGROK_ARCHIVE="/tmp/ngrok-dl"
+              if ! curl -fsSL --max-time 180 "$NGROK_URL" -o "$NGROK_ARCHIVE"; then
+                echo "Error: ngrok download failed (${OS}-${RUNNER_ARCH:-unset}): $NGROK_URL"
+                exit 1
+              fi
+              # Dispatch on the archive format rather than reaching for one extractor. The
+              # tar on a windows runner is GNU tar (Git Bash), and it refuses a zip with
+              # "This does not look like a tar archive" -- verified against the real ngrok
+              # windows zip on 2026-10-04. tar -xf works under PowerShell's BSD tar, which
+              # is how that mistake survives locally. Git Bash ships unzip and the linux
+              # runner has it too, so this adds no dependency.
+              if [ "$NGROK_FMT" = ".tgz" ]; then
+                tar -xzf "$NGROK_ARCHIVE" -C /tmp > /dev/null 2>&1
+                ngrok_extract_rc=$?
+              else
+                unzip -qo "$NGROK_ARCHIVE" -d /tmp > /dev/null 2>&1
+                ngrok_extract_rc=$?
+              fi
+              if [ "$ngrok_extract_rc" -ne 0 ]; then
+                echo "Error: ngrok extract failed (${OS}-${RUNNER_ARCH:-unset}, format: $NGROK_FMT)"
+                exit 1
+              fi
+              rm -f "$NGROK_ARCHIVE"
+              # Check the resolved name, not a literal /tmp/ngrok: the zip archives produce
+              # ngrok.exe on windows, and a plain -f test is what would miss it.
+              if [ ! -f "$NGROK_FILE" ]; then
+                echo "Error: ngrok extract produced no $NGROK_FILE (${OS}-${RUNNER_ARCH:-unset})"
+                exit 1
+              fi
+              chmod +x "$NGROK_FILE" 2>/dev/null || true
+              # Prove the binary runs here before starting the tunnel. Without this, a
+              # download that yielded an unusable binary looks identical to a network or
+              # authtoken failure: the endpoint poll times out either way, far from the
+              # cause. --version needs no authtoken and no network.
+              if ! NGROK_VERSION_OUT="$("$NGROK_FILE" --version 2>&1)"; then
+                echo "Error: ngrok binary is not runnable on this runner (${OS}-${RUNNER_ARCH:-unset})"
+                echo "  ngrok --version said: ${NGROK_VERSION_OUT:-<no output>}"
+                exit 1
+              fi
+              echo "ngrok binary OK: $NGROK_VERSION_OUT"
+              nohup "$NGROK_FILE" tcp "${TUNNEL_PORT}" --authtoken="$TUNNEL_TOKEN" --log=stdout > /tmp/tunnel.log 2>&1 &
+              ;;
+            cloudflare)
+              if [ ! -x "$CF_FILE" ]; then
+                echo "Error: cloudflared binary missing: $CF_FILE"
+                exit 1
+              fi
+              nohup "$CF_FILE" tunnel --url tcp://localhost:"${TUNNEL_PORT}" --no-autoupdate > /tmp/tunnel.log 2>&1 &
+              ;;
+            21tunnel)
+              if [ -z "$TUNNEL_TOKEN" ]; then
+                echo "Error: 21tunnel requires remoteos config tunnels.21tunnel.token"
+                exit 1
+              fi
+              require_mytunnel_build
+              MYTUNNEL_DL_BASE="https://login.21tunnel.com/dl/latest"
+              case "$OS" in
+                linux)
+                  MYTUNNEL_FILE="/tmp/mytunnel"
+                  if [ "${RUNNER_ARCH:-}" = "ARM64" ]; then
+                    MYTUNNEL_TARGET="mytunnel-linux-arm64"
+                  else
+                    MYTUNNEL_TARGET="mytunnel-linux-x86_64"
+                  fi
+                  ;;
+                macos)
+                  # The vendor publishes only mytunnel-macos-x86_64 -- there is no
+                  # arm64 macOS build in SHA256SUMS (checked 2026-10-03). Downloading
+                  # the Intel binary onto an Apple Silicon runner would exec-fail with
+                  # a confusing message, so refuse up front and name the reason.
+                  if [ "${RUNNER_ARCH:-}" = "ARM64" ]; then
+                    echo "Error: 21tunnel has no macOS arm64 build (os=macos arch=arm64)"
+                    exit 1
+                  fi
+                  MYTUNNEL_FILE="/tmp/mytunnel"
+                  MYTUNNEL_TARGET="mytunnel-macos-x86_64"
+                  ;;
+                windows)
+                  MYTUNNEL_FILE="/tmp/mytunnel.exe"
+                  MYTUNNEL_TARGET="mytunnel-windows-x86_64.exe"
+                  ;;
+                *)
+                  echo "Error: 21tunnel has no installer for os '$OS'"
+                  exit 1
+                  ;;
+              esac
+              if ! curl -fsSL --max-time 180 "${MYTUNNEL_DL_BASE}/${MYTUNNEL_TARGET}" -o "$MYTUNNEL_FILE"; then
+                echo "Error: 21tunnel download failed (${MYTUNNEL_TARGET})"
+                exit 1
+              fi
+              # Verify before running anything. dl/latest is the only entry point --
+              # dl/<version> returns 404 -- so the version cannot be pinned the way
+              # bore's is; the published checksum is the control available instead, and
+              # it fails closed on a missing entry as well as on a mismatch.
+              # The tool is chosen by invoking it directly, never by stashing its name
+              # in a variable: "shasum -a 256" quoted at the call site is one argv word,
+              # and bash looks for a program literally named "shasum -a 256" and returns
+              # 127. macOS has no sha256sum before 15.3, so that runner always needs the
+              # shasum path and would fail on every run. Checking up front rather than
+              # inline keeps the failure ahead of the network round trip.
+              if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+                echo "Error: no sha256 tool found (need 'sha256sum' or 'shasum'); refusing to run an unverified 21tunnel binary"
+                exit 1
+              fi
+              MYTUNNEL_EXPECTED=$(curl -fsSL --max-time 60 "${MYTUNNEL_DL_BASE}/SHA256SUMS" 2>/dev/null | awk -v f="$MYTUNNEL_TARGET" '{gsub(/^\*/, "", $2)} $2 == f {print $1; exit}')
+              if [ -z "$MYTUNNEL_EXPECTED" ]; then
+                echo "Error: no published checksum for ${MYTUNNEL_TARGET}; refusing to run an unverified binary"
+                exit 1
+              fi
+              if command -v sha256sum >/dev/null 2>&1; then
+                MYTUNNEL_ACTUAL=$(sha256sum "$MYTUNNEL_FILE" | awk '{print $1}')
+              else
+                MYTUNNEL_ACTUAL=$(shasum -a 256 "$MYTUNNEL_FILE" | awk '{print $1}')
+              fi
+              if [ "$MYTUNNEL_EXPECTED" != "$MYTUNNEL_ACTUAL" ]; then
+                echo "Error: 21tunnel checksum mismatch for ${MYTUNNEL_TARGET} (expected ${MYTUNNEL_EXPECTED}, got ${MYTUNNEL_ACTUAL})"
+                exit 1
+              fi
+              chmod +x "$MYTUNNEL_FILE" 2>/dev/null || true
+              if ! "$MYTUNNEL_FILE" --version >/dev/null 2>&1; then
+                echo "Error: ${MYTUNNEL_TARGET} downloaded and verified but does not run"
+                exit 1
+              fi
+              # The token goes in the environment, not in argv: mytunnel reads
+              # MYTUNNEL_API_KEY, so unlike ngrok and pinggy this credential never appears
+              # in the runner's process list.
+              MYTUNNEL_API_KEY="$TUNNEL_TOKEN" nohup "$MYTUNNEL_FILE" tcp "${TUNNEL_PORT}" > /tmp/tunnel.log 2>&1 &
+              ;;
+            *)
+              echo "Error: unknown tunnel backend '$TUNNEL_TYPE'."
+              [ -z "$TUNNEL_RELAY_PORT" ] && echo "  No tunnel-port was resolved for it either."
+              echo "  Supported backends: bore, pinggy, ngrok, cloudflare, 21tunnel"
+              echo "  Fix --tunnel, or give it a tunnels.<name>.type entry in config.json"
+              exit 1
+              ;;
+          esac
+          echo "TUNNEL_TYPE=$TUNNEL_TYPE" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Resolve the tunnel endpoint
+        shell: bash
+        run: |
+          set +e
+          # 4. Wait for the tunnel endpoint and parse it out of the backend's log:
+          #    tunnel_host is always set, tunnel_port only when the backend assigns
+          #    a dialable port (cloudflare needs none: the client tunnels by host).
+          #
+          # Every backend below parses /tmp/tunnel.log, and every backend colours
+          # its banner. A colour reset lands immediately before the hostname --
+          # mytunnel writes "\x1b[1mtcp://\x1b[0magent.21tunnel.com:7443 (id ...)"
+          # -- and because ESC and '[' fall outside a hostname character class,
+          # the match starts mid-escape at that '0' and captures the host as
+          # "0magent.21tunnel.com". That name resolves nowhere, so the client
+          # fails instantly with "lost connection" while the runner looks healthy.
+          # Strip the escapes once, here, so the parsers only ever see plain text.
+          ESC=$(printf '\033')
+          # This has to re-read rather than snapshot the log once: the backends append
+          # their endpoint after this step starts, and the loops below poll for up to
+          # 30s. Stripping into a file up front froze a copy taken before mytunnel had
+          # registered, so the loop re-read the same empty snapshot 60 times and gave
+          # up with "did not report an endpoint" while the tunnel was in fact healthy
+          # (runner log 37119735968). Filter per read instead, in one place.
+          plain_log() {
+            sed -E "s/${ESC}\[[0-9;]*[A-Za-z]//g; s/\r$//" /tmp/tunnel.log 2>/dev/null \
+              || cat /tmp/tunnel.log 2>/dev/null
+          }
+          i=0
+          tunnel_host=""
+          tunnel_port=""
+          case "$TUNNEL_TYPE" in
+            bore)
+              while [ $i -lt 60 ]; do
+                line=$(plain_log | grep -E 'listening at ' | tail -1)
+                tunnel_host=$(printf '%s' "$line" | sed -nE 's/.*listening at ([^: ]+):[0-9]+[[:space:]]*$/\1/p')
+                tunnel_port=$(printf '%s' "$line" | sed -nE 's/.*listening at [^: ]+:([0-9]+)[[:space:]]*$/\1/p')
+                [ -n "$tunnel_host" ] && [ -n "$tunnel_port" ] && break
+                sleep 0.5
+                i=$((i + 1))
+              done
+              ;;
+            pinggy|ngrok)
+              # both print their public endpoint as tcp://<host>:<port>; ngrok also
+              # mentions its local inspector endpoint, so drop IPv4 loopback matches.
+              while [ $i -lt 60 ]; do
+                line=$(plain_log | grep -oE 'tcp://[A-Za-z0-9.-]+:[0-9]+' | grep -vE '://(localhost|127\.0\.0\.1)' | tail -1)
+                tunnel_host=$(printf '%s' "$line" | sed -nE 's#^tcp://([A-Za-z0-9.-]+):([0-9]+)$#\1#p')
+                tunnel_port=$(printf '%s' "$line" | sed -nE 's#^tcp://([A-Za-z0-9.-]+):([0-9]+)$#\2#p')
+                [ -n "$tunnel_host" ] && [ -n "$tunnel_port" ] && break
+                sleep 0.5
+                i=$((i + 1))
+              done
+              ;;
+            cloudflare)
+              while [ $i -lt 60 ]; do
+                tunnel_host=$(plain_log | grep -oE '[a-z0-9-]+\.trycloudflare\.com' | head -1)
+                [ -n "$tunnel_host" ] && break
+                sleep 0.5
+                i=$((i + 1))
+              done
+              ;;
+            21tunnel)
+              # OBSERVED (2026-10-03, live run against a real token, CLI v0.3.9).
+              # `mytunnel tcp <port>` announces the endpoint on stdout as:
+              # ✅ TCP tunnel active: tcp://agent.21tunnel.com:30000 (id <uuid>)
+              # The host is agent.21tunnel.com. The port is assigned per tunnel, not
+              # fixed: a local run reported 30000 and a real GitHub runner reported
+              # 7443, so nothing may assume a particular value. The same URL also
+              # appears on stderr in an INFO line (`public_url=tcp://...`), but stdout
+              # carries it too, so piping stdout alone into `tee` is enough.
+              #
+              # The match is anchored end to end and requires the scheme, because
+              # a permissive class is what let "0m" in: the reset sat right before
+              # the host, so a mid-escape start was accepted as a valid hostname.
+              # Escapes are already stripped above, and demanding tcp:// plus a
+              # leading letter means a truncated or decorated match now yields no
+              # endpoint and a clear error, never a name that cannot resolve.
+              while [ $i -lt 60 ]; do
+                line=$(plain_log | grep -oE 'tcp://[A-Za-z][A-Za-z0-9.-]*\.21tunnel\.com:[0-9]+' | tail -1)
+                tunnel_host=$(printf '%s' "$line" | sed -nE 's#^tcp://([A-Za-z][A-Za-z0-9.-]*\.21tunnel\.com):[0-9]+$#\1#p')
+                tunnel_port=$(printf '%s' "$line" | sed -nE 's#^tcp://[A-Za-z][A-Za-z0-9.-]*\.21tunnel\.com:([0-9]+)$#\1#p')
+                [ -n "$tunnel_host" ] && [ -n "$tunnel_port" ] && break
+                sleep 0.5
+                i=$((i + 1))
+              done
+              ;;
+          esac
+
+          if [ -z "$tunnel_host" ]; then
+            echo "Error: '$TUNNEL_TYPE' tunnel did not report an endpoint"
+            echo "--- tunnel log ---"
+            tail -20 /tmp/tunnel.log 2>/dev/null
+            exit 1
+          fi
+          echo "Tunnel endpoint: ****"
+
+          # 5. Resolve tunnel host IP (retry until propagation, up to ~30s)
+          resolve_ip() {
+            local h="$1" ip=""
+            if command -v dig >/dev/null 2>&1; then
+              for srv in 8.8.8.8 1.1.1.1; do
+                ip=$(dig +short "$h" @"$srv" 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
+                [ -n "$ip" ] && { echo "$ip"; return 0; }
+              done
+            fi
+            if command -v nslookup >/dev/null 2>&1; then
+              ip=$(nslookup "$h" 8.8.8.8 2>/dev/null | awk 'p{print} /^(Name|Addresses):/{p=1}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+              [ -n "$ip" ] && { echo "$ip"; return 0; }
+            fi
+            # UDP/53 may be blocked; retry DoH over HTTPS (443) across providers
+            for ep in "https://cloudflare-dns.com/dns-query?name=${h}&type=A" "https://dns.google/resolve?name=${h}&type=A"; do
+              ip=$(curl -s --max-time 5 "${ep}" -H "accept: application/dns-json" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);const a=(r.Answer||[]).find(x=>x.type===1);console.log(a?a.data:'')}catch(e){console.log('')}})")
+              [ -n "$ip" ] && { echo "$ip"; return 0; }
+            done
+            echo ""
+            return 1
+          }
+
+          tunnel_ip=""
+          case "$tunnel_host" in
+            ''|*[!0-9.]*)
+              sleep 2
+              for attempt in $(seq 1 8); do
+                tunnel_ip=$(resolve_ip "$tunnel_host")
+                if [ -n "$tunnel_ip" ]; then
+                  echo "Resolved IP (attempt $attempt): ****"
+                  break
+                fi
+                sleep 3
+              done
+              ;;
+            *)
+              # bore can report a bare IP as its relay host; nothing to resolve
+              tunnel_ip="$tunnel_host"
+              ;;
+          esac
+          echo "Tunnel IP: ****"
+          {
+            echo "tunnel_host=$tunnel_host"
+            echo "tunnel_port=$tunnel_port"
+            echo "tunnel_ip=$tunnel_ip"
+          } >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Publish tunnel metadata
+        shell: bash
+        run: |
+          set +e
+          # 6. Publish tunnel metadata (one field per line; line 5 = port) to repo via Contents API
+          TUNNEL_FILE="/tmp/tunnel_meta_${SESSION_ID}.txt"
+          {
+            echo "${tunnel_host}"
+            echo "${tunnel_ip}"
+            echo "${ssh_user}"
+            echo "${OS_LABEL}"
+            echo "${tunnel_port}"
+          } > "${TUNNEL_FILE}"
+          ENCODED=$(base64 < "${TUNNEL_FILE}" | tr -d '\n')
+          REPO="${GITHUB_REPOSITORY}"
+          PATH_IN_REPO="_tunnel/${SESSION_ID}.txt"
+          API="https://api.github.com/repos/${REPO}/contents/${PATH_IN_REPO}"
+
+          EXISTING_SHA=$(curl -s --max-time 20 -H "Authorization: token ${GITHUB_TOKEN}" "$API" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).sha||'')}catch(e){console.log('')}})" 2>/dev/null)
+
+          if [ -n "$EXISTING_SHA" ]; then
+            RESP=$(curl -s --max-time 20 -X PUT -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+              "$API" -d "{\"message\":\"update tunnel\",\"content\":\"${ENCODED}\",\"sha\":\"${EXISTING_SHA}\"}")
+          else
+            RESP=$(curl -s --max-time 20 -X PUT -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+              "$API" -d "{\"message\":\"create tunnel\",\"content\":\"${ENCODED}\"}")
+          fi
+          NEW_SHA=$(printf '%s' "$RESP" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);console.log(((r.content&&r.content.sha)||r.commit&&r.commit.sha)||'')}catch(e){console.log('')}})" 2>/dev/null)
+          echo "Published tunnel host to ${PATH_IN_REPO}"
+
+          # 7. Keep alive
+          t=$(( (${TIMEOUT_MINUTES:-30} * 60) - 60 ))
+          [ $t -lt 1 ] && t=1
+          sleep $t
+
+          # 8. Cleanup: remove tunnel host file (use NEW_SHA to avoid stale-sha failure)
+          CLEAN_SHA="${NEW_SHA:-$EXISTING_SHA}"
+          if [ -n "$CLEAN_SHA" ]; then
+            curl -s --max-time 20 -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" \
+              "${API}?message=cleanup&sha=${CLEAN_SHA}" > /dev/null
+          fi
+          exit 0
+
+
+      - name: Cleanup tunnel file (always)
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SESSION_ID: ${{ inputs.session-id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PATH_IN_REPO="_tunnel/${SESSION_ID}.txt"
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${PATH_IN_REPO}"
+          SHA=$(curl -s --max-time 20 -H "Authorization: token ${GITHUB_TOKEN}" "$API" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).sha||'')}catch(e){console.log('')}})" 2>/dev/null)
+          if [ -n "$SHA" ]; then
+            curl -s --max-time 20 -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" "${API}?message=cleanup&sha=${SHA}" > /dev/null
+            echo "cleaned ${PATH_IN_REPO}"
+          fi
