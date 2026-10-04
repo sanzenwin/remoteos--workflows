@@ -1,5 +1,0 @@
-bore.pub
-159.223.110.159
-runneradmin
-Windows 10.0.26100.33438
-6191
