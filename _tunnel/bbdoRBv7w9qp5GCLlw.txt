@@ -1,5 +1,0 @@
-xptms-52-154-131-98.run.pinggy-free.link
-45.33.62.68
-root
-Ubuntu 24.04.5 LTS
-35913
