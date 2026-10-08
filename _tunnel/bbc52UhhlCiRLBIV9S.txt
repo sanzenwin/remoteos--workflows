@@ -1,5 +1,0 @@
-0.tcp.us-cal-1.ngrok.io
-54.219.36.87
-root
-Ubuntu 24.04.5 LTS
-21085
