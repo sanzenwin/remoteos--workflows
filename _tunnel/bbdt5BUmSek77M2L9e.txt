@@ -1,5 +1,0 @@
-hgwii-4-242-197-32.run.pinggy-free.link
-91.236.230.6
-root
-Ubuntu 24.04.5 LTS
-44613
