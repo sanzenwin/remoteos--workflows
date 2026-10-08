@@ -1,0 +1,5 @@
+xpjtk-172-178-119-119.run.pinggy-free.link
+45.33.62.68
+root
+Ubuntu 24.04.5 LTS
+42077
