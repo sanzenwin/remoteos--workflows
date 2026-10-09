@@ -1,0 +1,5 @@
+hycut-172-174-125-246.run.pinggy-free.link
+185.28.119.48
+root
+Ubuntu 24.04.5 LTS
+37073
