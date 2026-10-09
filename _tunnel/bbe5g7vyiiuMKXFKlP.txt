@@ -1,5 +1,0 @@
-ybnup-20-98-142-128.run.pinggy-free.link
-172.235.48.89
-root
-Ubuntu 24.04.5 LTS
-45259
