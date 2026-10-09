@@ -1,0 +1,5 @@
+2.tcp.us-cal-1.ngrok.io
+54.215.111.255
+root
+Ubuntu 24.04.5 LTS
+27729
