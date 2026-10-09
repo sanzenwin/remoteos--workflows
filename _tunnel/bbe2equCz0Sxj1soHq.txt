@@ -1,5 +1,0 @@
-ebyiu-20-172-111-117.run.pinggy-free.link
-172.235.48.89
-root
-Ubuntu 24.04.5 LTS
-41407
