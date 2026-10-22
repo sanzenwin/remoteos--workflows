@@ -1,5 +1,0 @@
-owdhm-128-24-161-26.run.pinggy-free.link
-45.33.62.68
-root
-Ubuntu 26.04.1 LTS
-35459
