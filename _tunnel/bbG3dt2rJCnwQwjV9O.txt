@@ -1,5 +1,0 @@
-6.tcp.ngrok.io
-3.141.142.211
-root
-Ubuntu 26.04.1 LTS
-15288
