@@ -1,0 +1,5 @@
+ibxkg-172-184-173-241.run.pinggy-free.link
+194.213.18.243
+root
+Ubuntu 26.04.1 LTS
+42797
