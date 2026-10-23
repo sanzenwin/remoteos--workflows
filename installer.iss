@@ -1,8 +1,8 @@
 [Setup]
 AppId={{7B39A6F2-65C7-4CC8-9E3F-8E841B0810A2}
 AppName=OpenCode
-AppVersion=1.19.3
-AppVerName=OpenCode 1.19.3
+AppVersion=1.19.4
+AppVerName=OpenCode 1.19.4
 UninstallDisplayName=OpenCode
 DefaultDirName={localappdata}\Programs\OpenCode
 DefaultGroupName=OpenCode
@@ -13,7 +13,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
 WizardStyle=modern
 OutputDir=out
-OutputBaseFilename=opencode-1.19.3-setup-windows-x64
+OutputBaseFilename=opencode-1.19.4-setup-windows-x64
 Uninstallable=yes
 CloseApplications=no
 
