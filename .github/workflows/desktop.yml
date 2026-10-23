@@ -30,11 +30,23 @@ jobs:
           curl.exe -fsSL --retry 5 -o work\src.zip "https://github.com/$env:REPO/releases/download/$env:TAG/opencode-src.zip"
           curl.exe -fsSL --retry 5 -o work\bun.lock "https://github.com/$env:REPO/releases/download/$env:TAG/bun.lock"
           curl.exe -fsSL --retry 5 -o work\symlinks.txt "https://github.com/$env:REPO/releases/download/$env:TAG/symlinks.txt"
-          curl.exe -fsSL --retry 5 -o work\symlinks_restore.py "https://github.com/$env:REPO/releases/download/$env:TAG/symlinks_restore.py"
           Expand-Archive work\src.zip -DestinationPath work\repo -Force
           Copy-Item work\bun.lock work\repo\bun.lock -Force
-          python work\symlinks_restore.py work\repo work\symlinks.txt
-          "symlinks restored"
+          # git archive materializes symlinks as text files; replace each with a real copy
+          # of its target from within the archive (targets are regular files)
+          $repo = Join-Path $PWD "work\repo"
+          $n = 0
+          foreach ($line in Get-Content work\symlinks.txt) {
+            $path, $target = $line -split "`t", 2
+            if (-not $path) { continue }
+            $dst = [IO.Path]::GetFullPath((Join-Path $repo $path))
+            $src = [IO.Path]::GetFullPath((Join-Path (Split-Path $dst) $target))
+            if (-not (Test-Path -LiteralPath $src)) { Write-Warning "missing target: $target"; continue }
+            if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+            $n++
+          }
+          "materialized $n symlinks"
           Test-Path "work\repo\packages\opencode\src\session\fingerprint.ts"
 
       - name: bun install
