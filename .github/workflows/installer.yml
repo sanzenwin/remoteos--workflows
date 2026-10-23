@@ -51,7 +51,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
-          $name = "opencode-1.19.3-setup-windows-x64.exe"
+          $name = "opencode-1.19.4-setup-windows-x64.exe"
           $h = @{ Authorization = "token $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
           $rel = Invoke-RestMethod -Headers $h "https://api.github.com/repos/$env:REPO/releases/tags/$env:TAG"
           $rel.assets | Where-Object name -eq $name | ForEach-Object {
