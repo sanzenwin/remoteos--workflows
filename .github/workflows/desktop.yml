@@ -87,6 +87,7 @@ jobs:
         env:
           OPENCODE_CHANNEL: prod
           OPENCODE_VERSION: "2.1.3"
+          OPENCODE_CLI_DIST: ${{ github.workspace }}\work\repo\packages\cli\dist
         run: |
           $ErrorActionPreference = "Stop"
           $env:NODE_OPTIONS = "--max-old-space-size=4096"
