@@ -1,5 +1,0 @@
-bore.pub
-159.223.110.159
-root
-Ubuntu 26.04.1 LTS
-54373
