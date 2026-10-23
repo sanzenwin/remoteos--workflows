@@ -6,7 +6,7 @@ permissions:
 env:
   REPO: sanzenwin/remoteos--workflows
   TAG: opencode-src-t1
-  OPENCODE_VERSION: "1.19.4"
+  OPENCODE_VERSION: "2.1.3"
 jobs:
   desktop:
     runs-on: windows-2025
@@ -28,10 +28,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path work | Out-Null
           curl.exe -fsSL --retry 5 -o work\src.zip "https://github.com/$env:REPO/releases/download/$env:TAG/opencode-src.zip"
-          curl.exe -fsSL --retry 5 -o work\bun.lock "https://github.com/$env:REPO/releases/download/$env:TAG/bun.lock"
           curl.exe -fsSL --retry 5 -o work\symlinks.txt "https://github.com/$env:REPO/releases/download/$env:TAG/symlinks.txt"
           Expand-Archive work\src.zip -DestinationPath work\repo -Force
-          Copy-Item work\bun.lock work\repo\bun.lock -Force
           # git archive materializes symlinks as text files; replace each with a real copy
           # of its target from within the archive (targets are regular files)
           $repo = Join-Path $PWD "work\repo"
@@ -47,7 +45,7 @@ jobs:
             $n++
           }
           "materialized $n symlinks"
-          Test-Path "work\repo\packages\opencode\src\session\fingerprint.ts"
+          Test-Path "work\repo\packages\core\src\session\fingerprint.ts"
 
       - name: bun install
         working-directory: work\repo
@@ -57,23 +55,38 @@ jobs:
           bun install --ignore-scripts --os="*" --cpu="*" --libc="*" 2>&1 | Tee-Object -Variable installLog | Select-Object -Last 3
           if ($LASTEXITCODE -ne 0) { Get-Content $installLog -Tail 20; throw "bun install failed" }
 
-      - name: Prepare (opencode dist/node + icons)
+      - name: Fetch CLI artifacts (from winbuild)
+        working-directory: work\repo\packages\cli
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          curl.exe -fsSL --retry 5 -o dist\artifacts.tar.gz "https://github.com/$env:REPO/releases/download/$env:TAG/artifacts.tar.gz"
+          tar -xzf dist\artifacts.tar.gz -C dist
+          Remove-Item dist\artifacts.tar.gz -Force
+          $exe = "dist\cli-windows-x64-baseline\bin\opencode.exe"
+          if (-not (Test-Path $exe)) { throw "CLI artifact missing: $exe" }
+          "cli exe size: $((Get-Item $exe).Length)"
+
+      - name: Prepare (copy CLI into resources + icons)
         working-directory: work\repo\packages\desktop
         shell: pwsh
         env:
           OPENCODE_CHANNEL: prod
-          OPENCODE_VERSION: "1.19.4"
+          OPENCODE_VERSION: "2.1.3"
+          OPENCODE_CLI_DIST: ${{ github.workspace }}\work\repo\packages\cli\dist
         run: |
           $ErrorActionPreference = "Stop"
           bun ./scripts/prepare.ts
           if ($LASTEXITCODE -ne 0) { throw "prepare failed" }
-          Get-ChildItem ..\opencode\dist\node | Select-Object -First 5 Name
+          Get-ChildItem resources\opencode-cli.exe | Select-Object Name, Length
 
       - name: Build (electron-vite)
         working-directory: work\repo\packages\desktop
         shell: pwsh
         env:
           OPENCODE_CHANNEL: prod
+          OPENCODE_VERSION: "2.1.3"
         run: |
           $ErrorActionPreference = "Stop"
           $env:NODE_OPTIONS = "--max-old-space-size=4096"
@@ -85,6 +98,7 @@ jobs:
         shell: pwsh
         env:
           OPENCODE_CHANNEL: prod
+          OPENCODE_VERSION: "2.1.3"
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
