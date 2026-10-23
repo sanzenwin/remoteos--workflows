@@ -1,0 +1,127 @@
+name: OpenCode Desktop Pack
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  REPO: sanzenwin/remoteos--workflows
+  TAG: opencode-src-t1
+  OPENCODE_VERSION: "1.19.4"
+jobs:
+  desktop:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Setup bun 1.4.4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          curl.exe -fsSL --retry 5 -o bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64-baseline.zip"
+          Expand-Archive bun.zip -DestinationPath "$env:RUNNER_TEMP\bun" -Force
+          $bun = Get-ChildItem "$env:RUNNER_TEMP\bun" -Recurse -Filter "bun.exe" | Select-Object -First 1
+          Add-Content $env:GITHUB_PATH "$($bun.DirectoryName)"
+          & $bun.FullName --version
+
+      - name: Fetch sources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path work | Out-Null
+          curl.exe -fsSL --retry 5 -o work\src.zip "https://github.com/$env:REPO/releases/download/$env:TAG/opencode-src.zip"
+          curl.exe -fsSL --retry 5 -o work\bun.lock "https://github.com/$env:REPO/releases/download/$env:TAG/bun.lock"
+          curl.exe -fsSL --retry 5 -o work\symlinks.txt "https://github.com/$env:REPO/releases/download/$env:TAG/symlinks.txt"
+          Expand-Archive work\src.zip -DestinationPath work\repo -Force
+          Copy-Item work\bun.lock work\repo\bun.lock -Force
+          python work\symlinks_restore.py work\repo work\symlinks.txt
+          "symlinks restored"
+          Test-Path "work\repo\packages\opencode\src\session\fingerprint.ts"
+
+      - name: Write symlinks script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $py = @'
+import os, sys
+repo, manifest = sys.argv[1], sys.argv[2]
+n = 0
+for line in open(manifest):
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    path, target = line.split("\t", 1)
+    dst = os.path.join(repo, path)
+    if not os.path.isfile(dst) or open(dst, "r", errors="replace").read().strip() != target:
+        print("WARN: unexpected content for", path)
+    os.remove(dst)
+    os.symlink(target, dst)
+    n += 1
+print("rebuilt", n, "symlinks")
+'@
+          Set-Content -Path symlinks_restore.py -Value $py -Encoding utf8
+
+      - name: bun install
+        working-directory: work\repo
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          bun install --ignore-scripts --os="*" --cpu="*" --libc="*" 2>&1 | Tee-Object -Variable installLog | Select-Object -Last 3
+          if ($LASTEXITCODE -ne 0) { Get-Content $installLog -Tail 20; throw "bun install failed" }
+
+      - name: Prepare (opencode dist/node + icons)
+        working-directory: work\repo\packages\desktop
+        shell: pwsh
+        env:
+          OPENCODE_CHANNEL: prod
+          OPENCODE_VERSION: "1.19.4"
+        run: |
+          $ErrorActionPreference = "Stop"
+          bun ./scripts/prepare.ts
+          if ($LASTEXITCODE -ne 0) { throw "prepare failed" }
+          Get-ChildItem ..\opencode\dist\node | Select-Object -First 5 Name
+
+      - name: Build (electron-vite)
+        working-directory: work\repo\packages\desktop
+        shell: pwsh
+        env:
+          OPENCODE_CHANNEL: prod
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:NODE_OPTIONS = "--max-old-space-size=4096"
+          bun run build
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+
+      - name: Package (electron-builder NSIS)
+        working-directory: work\repo\packages\desktop
+        shell: pwsh
+        env:
+          OPENCODE_CHANNEL: prod
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          npx electron-builder --win --publish never --config electron-builder.config.ts
+          if ($LASTEXITCODE -ne 0) { throw "package failed" }
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Upload desktop installer assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $h = @{ Authorization = "token $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+          $rel = Invoke-RestMethod -Headers $h "https://api.github.com/repos/$env:REPO/releases/tags/$env:TAG"
+          foreach ($name in @("opencode-desktop-win-x64.exe", "opencode-desktop-win-x64.exe.blockmap", "latest.yml")) {
+            $rel.assets | Where-Object name -eq $name | ForEach-Object {
+              Invoke-RestMethod -Method Delete -Headers $h "https://api.github.com/repos/$env:REPO/releases/assets/$($_.id)" | Out-Null
+            }
+          }
+          $rel2 = Invoke-RestMethod -Headers $h "https://api.github.com/repos/$env:REPO/releases/tags/$env:TAG"
+          foreach ($name in @("opencode-desktop-win-x64.exe", "opencode-desktop-win-x64.exe.blockmap", "latest.yml")) {
+            $src = Join-Path "work\repo\packages\desktop\dist" $name
+            if (Test-Path $src) {
+              curl.exe -fsS -X POST -H "Authorization: token $env:GITHUB_TOKEN" -H "Content-Type: application/octet-stream" --data-binary "@$src" "https://uploads.github.com/repos/$env:REPO/releases/$($rel2.id)/assets?name=$name"
+              "uploaded: $name"
+            } else {
+              "missing asset: $name"
+            }
+          }
