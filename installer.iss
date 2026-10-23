@@ -30,9 +30,8 @@ Name: "{userdesktop}\OpenCode"; Filename: "{app}\opencode.exe"; Tasks: desktopic
 
 [Code]
 const
-  WM_SETTINGCHANGE = $001A;
-  HWND_BROADCAST = $FFFF;
-  SMTO_ABORTIFHUNG = $0002;
+  OC_WM_SETTINGCHANGE = $001A;
+  OC_SMTO_ABORTIFHUNG = $0002;
 
 procedure SendMessageTimeout(hWnd: HWND; Msg, wParam: LongInt;
   lParam: Cardinal; fuFlags, uTimeout: UINT;
@@ -42,8 +41,8 @@ procedure BroadcastSettingChange();
 var
   Res: DWORD;
 begin
-  SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 0,
-    SMTO_ABORTIFHUNG, 2000, Res);
+  SendMessageTimeout(HWND_BROADCAST, OC_WM_SETTINGCHANGE, 0, 0,
+    OC_SMTO_ABORTIFHUNG, 2000, Res);
 end;
 
 function PathContains(Paths, Path: string): Boolean;
