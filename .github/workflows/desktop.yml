@@ -68,31 +68,22 @@ jobs:
           if (-not (Test-Path $exe)) { throw "CLI artifact missing: $exe" }
           "cli exe size: $((Get-Item $exe).Length)"
 
-      - name: Prepare (copy CLI into resources + icons)
+      - name: Build (icons + CLI resources + electron-vite)
         working-directory: work\repo\packages\desktop
         shell: pwsh
         env:
           OPENCODE_CHANNEL: prod
           OPENCODE_VERSION: "2.2.0"
-          OPENCODE_CLI_DIST: ${{ github.workspace }}\work\repo\packages\cli\dist
+          OPENCODE_TARGET: windows-x64
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: |
           $ErrorActionPreference = "Stop"
-          bun ./scripts/prepare.ts
-          if ($LASTEXITCODE -ne 0) { throw "prepare failed" }
-          Get-ChildItem resources\opencode-cli.exe | Select-Object Name, Length
-
-      - name: Build (electron-vite)
-        working-directory: work\repo\packages\desktop
-        shell: pwsh
-        env:
-          OPENCODE_CHANNEL: prod
-          OPENCODE_VERSION: "2.2.0"
-          OPENCODE_CLI_DIST: ${{ github.workspace }}\work\repo\packages\cli\dist
-        run: |
-          $ErrorActionPreference = "Stop"
-          $env:NODE_OPTIONS = "--max-old-space-size=4096"
+          # v2.2.0 folds the old scripts/prepare.ts into script/build.ts: it reads the built CLI
+          # from ../cli/dist (target windows-x64 -> package dir cli-windows-x64-baseline) and
+          # fails in prod when the CLI is not there.
           bun run build
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          Get-ChildItem resources\opencode-cli.exe | Select-Object Name, Length
 
       - name: Package (electron-builder NSIS)
         working-directory: work\repo\packages\desktop
@@ -103,7 +94,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
-          npx electron-builder --win --publish never --config electron-builder.config.ts
+          npx electron-builder --win --x64 --publish never --config electron-builder.config.ts
           if ($LASTEXITCODE -ne 0) { throw "package failed" }
           Get-ChildItem dist | Select-Object Name, Length
 
