@@ -20,6 +20,8 @@ jobs:
           Expand-Archive bun.zip -DestinationPath "$env:RUNNER_TEMP\bun" -Force
           $bun = Get-ChildItem "$env:RUNNER_TEMP\bun" -Recurse -Filter "bun.exe" | Select-Object -First 1
           Add-Content $env:GITHUB_PATH "$($bun.DirectoryName)"
+          # v2.2.0 script/build.ts shells out to `bunx`; bun's bunx is the same binary dispatched by argv[0].
+          Copy-Item $bun.FullName "$($bun.DirectoryName)\bunx.exe" -Force
           & $bun.FullName --version
 
       - name: Fetch sources
