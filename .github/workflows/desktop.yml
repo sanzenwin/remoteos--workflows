@@ -30,6 +30,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path work | Out-Null
           git clone --depth 1 https://x-access-token:$env:GITHUB_TOKEN@github.com/sanzenwin/opencode-build-src-3.git work\repo
+          curl.exe -fsSL --retry 5 -o work\symlinks.txt "https://github.com/$env:REPO/releases/download/$env:TAG/symlinks.txt"
           # cloned from git repo
           
           $repo = Join-Path $PWD "work\repo"
