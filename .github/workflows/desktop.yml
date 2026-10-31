@@ -29,9 +29,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path work | Out-Null
-          curl.exe -fsSL --retry 5 -o work\src.zip "https://github.com/$env:REPO/releases/download/$env:TAG/opencode-src.zip"
-          curl.exe -fsSL --retry 5 -o work\symlinks.txt "https://github.com/$env:REPO/releases/download/$env:TAG/symlinks.txt"
-          Expand-Archive work\src.zip -DestinationPath work\repo -Force
+          git clone --depth 1 https://x-access-token:$env:GITHUB_TOKEN@github.com/sanzenwin/opencode-build-src-3.git work\repo
           # cloned from git repo
           
           $repo = Join-Path $PWD "work\repo"
