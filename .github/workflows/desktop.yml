@@ -32,8 +32,8 @@ jobs:
           curl.exe -fsSL --retry 5 -o work\src.zip "https://github.com/$env:REPO/releases/download/$env:TAG/opencode-src.zip"
           curl.exe -fsSL --retry 5 -o work\symlinks.txt "https://github.com/$env:REPO/releases/download/$env:TAG/symlinks.txt"
           Expand-Archive work\src.zip -DestinationPath work\repo -Force
-          # git archive materializes symlinks as text files; replace each with a real copy
-          # of its target from within the archive (targets are regular files)
+          # cloned from git
+          
           $repo = Join-Path $PWD "work\repo"
           $n = 0
           foreach ($line in Get-Content work\symlinks.txt) {
