@@ -1,5 +1,0 @@
-lovers-slot-analog-read.trycloudflare.com
-104.16.230.132
-runner
-macOS 26.7.2 ARM64
-
